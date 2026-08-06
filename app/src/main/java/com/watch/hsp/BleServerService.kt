@@ -23,20 +23,16 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.media.Ringtone
-import android.media.RingtoneManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelUuid
-import android.os.PowerManager
 import android.os.SystemClock
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.watch.hsp.data.WatchPreferences
+import com.watch.hsp.service.PhoneAlertController
 
 /**
  * Foreground BLE client for the watch-owned HSP companion service.
@@ -50,8 +46,6 @@ class BleServerService : Service() {
         private const val TAG = "HspBleClient"
         private const val CHANNEL_ID = "hsp_watch_service"
         private const val NOTIFICATION_ID = 1001
-        private const val PREFERENCES = "hsp_ble_companion"
-        private const val WATCH_ADDRESS_KEY = "watch_ble_address"
 
         private const val ACTION_START = "com.watch.hsp.action.START"
         private const val ACTION_FIND_WATCH = "com.watch.hsp.action.FIND_WATCH"
@@ -87,7 +81,8 @@ class BleServerService : Service() {
     }
 
     private val bluetoothManager by lazy { getSystemService(BluetoothManager::class.java) }
-    private val preferences by lazy { getSharedPreferences(PREFERENCES, MODE_PRIVATE) }
+    private val phoneAlertController by lazy { PhoneAlertController(this) }
+    private val watchPreferences by lazy { WatchPreferences(this) }
     private val handler = Handler(Looper.getMainLooper())
 
     private var scanner: BluetoothLeScanner? = null
@@ -101,11 +96,8 @@ class BleServerService : Service() {
     private var pendingScanFallbackReason: String? = null
     private var isConnecting = false
     private var connectingFromCachedAddress = false
-    private var isRinging = false
     private var pendingFindWatch = false
     private var watchSequence: Byte = 0
-    private var ringtone: Ringtone? = null
-    private var wakeLock: PowerManager.WakeLock? = null
 
     private val scanTimeout = Runnable {
         if (!isScanning && !scanRequestPending) return@Runnable
@@ -161,9 +153,6 @@ class BleServerService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        wakeLock = getSystemService(PowerManager::class.java)
-            ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:FindPhone")
-            ?.apply { setReferenceCounted(false) }
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -232,13 +221,13 @@ class BleServerService : Service() {
             return
         }
 
-        val cachedAddress = preferences.getString(WATCH_ADDRESS_KEY, null)
+        val cachedAddress = watchPreferences.watchAddress
         if (cachedAddress != null) {
             try {
                 connectToWatch(adapter.getRemoteDevice(cachedAddress), fromCachedAddress = true)
                 return
             } catch (exception: IllegalArgumentException) {
-                preferences.edit().remove(WATCH_ADDRESS_KEY).apply()
+                watchPreferences.clearWatchAddress()
                 Log.w(TAG, "Discarded invalid cached BLE address: $cachedAddress", exception)
             } catch (exception: SecurityException) {
                 setError("蓝牙连接权限已被撤销")
@@ -326,7 +315,7 @@ class BleServerService : Service() {
             if (protocolIncompatible || bluetoothGatt != null || isConnecting) return
 
             Log.i(TAG, "Found HSP watch ${device.address}, RSSI=${result.rssi}")
-            preferences.edit().putString(WATCH_ADDRESS_KEY, device.address).apply()
+            watchPreferences.saveWatchAddress(device.address)
             stopScan()
             connectToWatch(device, fromCachedAddress = false)
         }
@@ -526,52 +515,28 @@ class BleServerService : Service() {
     }
 
     private fun startRinging(sequence: Byte) {
-        if (isRinging) {
+        if (phoneAlertController.isRinging) {
             BleServerStatus.update { it.copy(ringing = true, lastMessage = "手机正在响铃") }
             return
         }
-        isRinging = true
-        try {
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            ringtone = uri?.let { RingtoneManager.getRingtone(this, it) }
-            ringtone?.play()
-            vibrator()?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 650, 650), 0))
-            wakeLock?.takeUnless { it.isHeld }?.acquire(10 * 60 * 1000L)
-            BleServerStatus.update {
-                it.copy(ringing = true, lastMessage = "手机正在响铃（序号 ${sequence.toInt() and 0xff}）")
+
+        phoneAlertController.start()
+            .onSuccess {
+                BleServerStatus.update {
+                    it.copy(ringing = true, lastMessage = "手机正在响铃（序号 ${sequence.toInt() and 0xff}）")
+                }
+                Log.i(TAG, "Ringing started by watch")
             }
-            Log.i(TAG, "Ringing started by watch")
-        } catch (exception: Exception) {
-            Log.e(TAG, "Unable to start ringing", exception)
-            isRinging = false
-            stopAlertHardware()
-            BleServerStatus.update { it.copy(ringing = false, lastMessage = "无法响铃：${exception.message}") }
-        }
+            .onFailure { exception ->
+                Log.e(TAG, "Unable to start ringing", exception)
+                BleServerStatus.update { it.copy(ringing = false, lastMessage = "无法响铃：${exception.message}") }
+            }
     }
 
     private fun stopRinging(reason: String) {
-        if (isRinging) Log.i(TAG, "Ringing stopped: $reason")
-        isRinging = false
-        stopAlertHardware()
+        if (phoneAlertController.isRinging) Log.i(TAG, "Ringing stopped: $reason")
+        phoneAlertController.stop()
         BleServerStatus.update { it.copy(ringing = false, lastMessage = "空闲：$reason") }
-    }
-
-    private fun stopAlertHardware() {
-        try {
-            ringtone?.stop()
-            ringtone = null
-            vibrator()?.cancel()
-            if (wakeLock?.isHeld == true) wakeLock?.release()
-        } catch (exception: Exception) {
-            Log.w(TAG, "Unable to stop alert cleanly", exception)
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun vibrator(): Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        getSystemService(VibratorManager::class.java)?.defaultVibrator
-    } else {
-        getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
     private fun handleLinkFailure(message: String, scanImmediately: Boolean) {
