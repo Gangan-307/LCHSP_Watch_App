@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">HSP Watch</string>
+    <string name="notification_channel_name">HSP Watch 服务</string>
+    <string name="notification_title">HSP Watch 已就绪</string>
+    <string name="notification_text">正在连接 HSP Watch 查找服务</string>
+    <string name="notification_stop_ringing">停止响铃</string>
+</resources>

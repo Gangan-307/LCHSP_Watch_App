@@ -1,0 +1,707 @@
+package com.watch.hsp
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.ParcelUuid
+import android.os.PowerManager
+import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.util.Log
+import androidx.core.content.ContextCompat
+
+/**
+ * Foreground BLE client for the watch-owned HSP companion service.
+ *
+ * The app reconnects to its last observed BLE address first.  A filtered scan
+ * is only the fallback path, so normal classic Bluetooth links do not get
+ * disturbed by a watch-side scan/reconnect loop.
+ */
+class BleServerService : Service() {
+    companion object {
+        private const val TAG = "HspBleClient"
+        private const val CHANNEL_ID = "hsp_watch_service"
+        private const val NOTIFICATION_ID = 1001
+        private const val PREFERENCES = "hsp_ble_companion"
+        private const val WATCH_ADDRESS_KEY = "watch_ble_address"
+
+        private const val ACTION_START = "com.watch.hsp.action.START"
+        private const val ACTION_FIND_WATCH = "com.watch.hsp.action.FIND_WATCH"
+        private const val ACTION_STOP_RINGING = "com.watch.hsp.action.STOP_RINGING"
+
+        private const val SCAN_TIMEOUT_MS = 15_000L
+        private const val SCAN_ACTIVATION_GRACE_MS = 1_000L
+        private const val RECONNECT_DELAY_MS = 3_000L
+        private const val SCAN_FAILURE_RETRY_MS = 5_000L
+        private const val SCAN_TOO_FREQUENTLY_RETRY_MS = 30_000L
+
+        fun start(context: Context) = sendForegroundCommand(context, ACTION_START)
+
+        fun findWatch(context: Context) = sendForegroundCommand(context, ACTION_FIND_WATCH)
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, BleServerService::class.java))
+        }
+
+        fun stopRinging(context: Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, BleServerService::class.java).setAction(ACTION_STOP_RINGING)
+            )
+        }
+
+        private fun sendForegroundCommand(context: Context, action: String) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, BleServerService::class.java).setAction(action)
+            )
+        }
+    }
+
+    private val bluetoothManager by lazy { getSystemService(BluetoothManager::class.java) }
+    private val preferences by lazy { getSharedPreferences(PREFERENCES, MODE_PRIVATE) }
+    private val handler = Handler(Looper.getMainLooper())
+
+    private var scanner: BluetoothLeScanner? = null
+    private var bluetoothGatt: BluetoothGatt? = null
+    private var controlCharacteristic: BluetoothGattCharacteristic? = null
+    private var stateCharacteristic: BluetoothGattCharacteristic? = null
+    private var isScanning = false
+    private var scanRequestPending = false
+    private var scanBlockedUntilMs = 0L
+    private var protocolIncompatible = false
+    private var pendingScanFallbackReason: String? = null
+    private var isConnecting = false
+    private var connectingFromCachedAddress = false
+    private var isRinging = false
+    private var pendingFindWatch = false
+    private var watchSequence: Byte = 0
+    private var ringtone: Ringtone? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    private val scanTimeout = Runnable {
+        if (!isScanning && !scanRequestPending) return@Runnable
+        stopScan()
+        scheduleReconnect("未找到手表，稍后重试")
+    }
+
+    private val scanActivation = Runnable {
+        if (!scanRequestPending || isScanning) return@Runnable
+
+        scanRequestPending = false
+        isScanning = true
+        BleServerStatus.update {
+            it.copy(scanning = true, scanRequestPending = false, scanBackoff = false,
+                lastMessage = "正在扫描手表")
+        }
+        Log.i(TAG, "Service-filtered BLE scan is active")
+    }
+
+    private val connectionTimeout = Runnable {
+        if (!isConnecting) return@Runnable
+        val source = if (connectingFromCachedAddress) "缓存地址直连超时" else "扫描后连接超时"
+        handleLinkFailure(source, scanImmediately = connectingFromCachedAddress)
+    }
+
+    private val reconnectTask = Runnable {
+        val scanReason = pendingScanFallbackReason
+        pendingScanFallbackReason = null
+        if (!BleServerStatus.state.value.serviceRunning || protocolIncompatible) return@Runnable
+
+        if (scanReason != null) startScan(scanReason) else startBleClient()
+    }
+
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            Log.i(TAG, "Bluetooth adapter state changed: $state")
+            BleServerStatus.refreshPrerequisites(this@BleServerService)
+            if (state == BluetoothAdapter.STATE_ON && BleServerStatus.state.value.serviceRunning) {
+                startBleClient()
+            } else if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
+                stopRinging("蓝牙已关闭")
+                stopBleResources()
+                BleServerStatus.update {
+                    it.copy(scanning = false, scanRequestPending = false, scanBackoff = false,
+                        connected = false, commandChannelReady = false, lastMessage = "蓝牙已关闭")
+                }
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+        wakeLock = getSystemService(PowerManager::class.java)
+            ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:FindPhone")
+            ?.apply { setReferenceCounted(false) }
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(bluetoothStateReceiver, filter)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_STOP_RINGING -> {
+                if (BleServerStatus.state.value.serviceRunning) stopRinging("通知或界面操作")
+            }
+            ACTION_FIND_WATCH -> {
+                pendingFindWatch = true
+                ensureForeground()
+                startBleClient(userInitiated = true)
+                sendFindWatchCommand()
+            }
+            else -> {
+                ensureForeground()
+                startBleClient(userInitiated = true)
+            }
+        }
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun ensureForeground() {
+        startForeground(NOTIFICATION_ID, buildNotification())
+        BleServerStatus.refreshPrerequisites(this)
+        BleServerStatus.update { it.copy(serviceRunning = true) }
+    }
+
+    private fun startBleClient(userInitiated: Boolean = false) {
+        if (userInitiated && protocolIncompatible) {
+            protocolIncompatible = false
+            BleServerStatus.update {
+                it.copy(protocolIncompatible = false, lastMessage = "正在重新检查手表协议")
+            }
+        }
+
+        BleServerStatus.refreshPrerequisites(this)
+        val prerequisites = BleServerStatus.state.value
+        when {
+            !prerequisites.hasBleHardware -> {
+                setError("此手机不支持低功耗蓝牙")
+                return
+            }
+            !prerequisites.blePermissionsGranted -> {
+                setError("需要蓝牙扫描和连接权限")
+                return
+            }
+            !prerequisites.bluetoothEnabled -> {
+                setError("请开启蓝牙后再连接手表")
+                return
+            }
+            protocolIncompatible -> return
+            bluetoothGatt != null || isScanning || scanRequestPending || isConnecting -> return
+        }
+
+        val adapter = bluetoothManager?.adapter
+        if (adapter == null) {
+            setError("蓝牙适配器不可用")
+            return
+        }
+
+        val cachedAddress = preferences.getString(WATCH_ADDRESS_KEY, null)
+        if (cachedAddress != null) {
+            try {
+                connectToWatch(adapter.getRemoteDevice(cachedAddress), fromCachedAddress = true)
+                return
+            } catch (exception: IllegalArgumentException) {
+                preferences.edit().remove(WATCH_ADDRESS_KEY).apply()
+                Log.w(TAG, "Discarded invalid cached BLE address: $cachedAddress", exception)
+            } catch (exception: SecurityException) {
+                setError("蓝牙连接权限已被撤销")
+                return
+            }
+        }
+
+        startScan("未缓存手表地址，正在扫描")
+    }
+
+    private fun connectToWatch(device: BluetoothDevice, fromCachedAddress: Boolean) {
+        if (bluetoothGatt != null || isConnecting) return
+
+        connectingFromCachedAddress = fromCachedAddress
+        isConnecting = true
+        BleServerStatus.update {
+            it.copy(scanning = false, scanRequestPending = false, scanBackoff = false,
+                connected = false, commandChannelReady = false,
+                watchAddress = device.address,
+                lastMessage = if (fromCachedAddress) "正在直连已保存的手表" else "正在连接扫描到的手表")
+        }
+
+        try {
+            bluetoothGatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            if (bluetoothGatt == null) {
+                handleLinkFailure("无法创建 BLE 连接", scanImmediately = fromCachedAddress)
+                return
+            }
+            handler.removeCallbacks(connectionTimeout)
+            handler.postDelayed(connectionTimeout, 10_000L)
+        } catch (exception: SecurityException) {
+            setError("蓝牙连接权限已被撤销")
+            closeGatt()
+        } catch (exception: IllegalStateException) {
+            handleLinkFailure("蓝牙系统暂不可用", scanImmediately = fromCachedAddress)
+        }
+    }
+
+    private fun startScan(reason: String) {
+        if (protocolIncompatible || isScanning || scanRequestPending || bluetoothGatt != null || isConnecting) return
+
+        val remainingBackoffMs = scanBlockedUntilMs - SystemClock.elapsedRealtime()
+        if (remainingBackoffMs > 0L) {
+            scheduleReconnect("BLE 扫描限频", remainingBackoffMs, scanBackoff = true)
+            return
+        }
+        scanBlockedUntilMs = 0L
+
+        val adapter = bluetoothManager?.adapter
+        scanner = adapter?.bluetoothLeScanner
+        val activeScanner = scanner
+        if (activeScanner == null) {
+            scheduleReconnect("BLE 扫描器不可用")
+            return
+        }
+
+        try {
+            val filter = ScanFilter.Builder()
+                .setServiceUuid(ParcelUuid(BleProtocol.SERVICE_UUID))
+                .build()
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .build()
+            activeScanner.startScan(listOf(filter), settings, scanCallback)
+            scanRequestPending = true
+            BleServerStatus.update {
+                it.copy(scanning = false, scanRequestPending = true, scanBackoff = false,
+                    lastMessage = "$reason，正在请求扫描")
+            }
+            handler.removeCallbacks(scanTimeout)
+            handler.removeCallbacks(scanActivation)
+            handler.postDelayed(scanActivation, SCAN_ACTIVATION_GRACE_MS)
+            handler.postDelayed(scanTimeout, SCAN_TIMEOUT_MS)
+            Log.i(TAG, "Requested service-filtered BLE scan")
+        } catch (exception: SecurityException) {
+            setError("蓝牙扫描权限已被撤销")
+        } catch (exception: IllegalStateException) {
+            scheduleReconnect("蓝牙扫描暂不可用")
+        }
+    }
+
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            val device = result.device ?: return
+            if (protocolIncompatible || bluetoothGatt != null || isConnecting) return
+
+            Log.i(TAG, "Found HSP watch ${device.address}, RSSI=${result.rssi}")
+            preferences.edit().putString(WATCH_ADDRESS_KEY, device.address).apply()
+            stopScan()
+            connectToWatch(device, fromCachedAddress = false)
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            isScanning = false
+            scanRequestPending = false
+            handler.removeCallbacks(scanTimeout)
+            handler.removeCallbacks(scanActivation)
+
+            val retryDelay = if (errorCode == ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY) {
+                SCAN_TOO_FREQUENTLY_RETRY_MS
+            } else {
+                SCAN_FAILURE_RETRY_MS
+            }
+            val limited = errorCode == ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY
+            if (limited) scanBlockedUntilMs = SystemClock.elapsedRealtime() + retryDelay
+            scheduleReconnect("BLE 扫描失败：$errorCode", retryDelay, scanBackoff = limited)
+        }
+    }
+
+    private fun stopScan() {
+        handler.removeCallbacks(scanTimeout)
+        handler.removeCallbacks(scanActivation)
+        if (!isScanning && !scanRequestPending) return
+        try {
+            scanner?.stopScan(scanCallback)
+        } catch (exception: SecurityException) {
+            Log.w(TAG, "Unable to stop BLE scan after permission change", exception)
+        }
+        isScanning = false
+        scanRequestPending = false
+        BleServerStatus.update { it.copy(scanning = false, scanRequestPending = false) }
+    }
+
+    private val gattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (gatt !== bluetoothGatt) {
+                gatt.close()
+                return
+            }
+            handler.removeCallbacks(connectionTimeout)
+            isConnecting = false
+
+            if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
+                handler.removeCallbacks(reconnectTask)
+                pendingScanFallbackReason = null
+                Log.i(TAG, "Connected to watch ${gatt.device.address}; discovering services")
+                BleServerStatus.update {
+                    it.copy(connected = true, commandChannelReady = false,
+                        watchAddress = gatt.device.address, lastMessage = "已连接手表，正在发现服务")
+                }
+                if (!gatt.discoverServices()) {
+                    handleLinkFailure("无法发现手表服务", scanImmediately = false)
+                }
+                return
+            }
+
+            val useScanFallback = connectingFromCachedAddress
+            Log.w(TAG, "GATT disconnected status=$status state=$newState")
+            closeGatt(gatt)
+            BleServerStatus.update {
+                it.copy(connected = false, commandChannelReady = false,
+                    lastMessage = "手表连接已断开：$status")
+            }
+            if (useScanFallback) scheduleScanFallback("缓存地址不可用，正在扫描手表")
+            else scheduleReconnect("手表连接已断开")
+        }
+
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (gatt !== bluetoothGatt) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                handleLinkFailure("手表服务发现失败：$status", scanImmediately = false)
+                return
+            }
+
+            val service = gatt.getService(BleProtocol.SERVICE_UUID)
+            controlCharacteristic = service?.getCharacteristic(BleProtocol.CONTROL_UUID)
+            stateCharacteristic = service?.getCharacteristic(BleProtocol.STATE_UUID)
+            if (controlCharacteristic == null || stateCharacteristic == null) {
+                handleProtocolIncompatibility()
+                return
+            }
+
+            enableStateNotifications(gatt, stateCharacteristic!!)
+        }
+
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (gatt !== bluetoothGatt || descriptor.characteristic.uuid != BleProtocol.STATE_UUID) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                handleLinkFailure("无法订阅手表状态：$status", scanImmediately = false)
+                return
+            }
+
+            BleServerStatus.update {
+                it.copy(connected = true, commandChannelReady = true,
+                    watchAddress = gatt.device.address, lastMessage = "已直连手表，查找通道已就绪")
+            }
+            Log.i(TAG, "HSP STATE notification subscribed")
+            if (pendingFindWatch) sendFindWatchCommand()
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (gatt === bluetoothGatt && characteristic.uuid == BleProtocol.STATE_UUID) {
+                handleWatchState(characteristic.value ?: return)
+            }
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            if (gatt === bluetoothGatt && characteristic.uuid == BleProtocol.STATE_UUID) {
+                handleWatchState(value)
+            }
+        }
+
+        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (gatt !== bluetoothGatt || characteristic.uuid != BleProtocol.CONTROL_UUID) return
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                BleServerStatus.update { it.copy(lastMessage = "已发送查找手表命令") }
+            } else {
+                BleServerStatus.update { it.copy(lastMessage = "查找手表命令发送失败：$status") }
+            }
+        }
+    }
+
+    private fun enableStateNotifications(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        val descriptor = characteristic.getDescriptor(BleProtocol.CCCD_UUID)
+        if (descriptor == null || !gatt.setCharacteristicNotification(characteristic, true)) {
+            handleLinkFailure("手表状态通知不可用", scanImmediately = false)
+            return
+        }
+
+        val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
+                BluetoothStatusCodes.SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            gatt.writeDescriptor(descriptor)
+        }
+        if (!started) handleLinkFailure("无法请求手表状态通知", scanImmediately = false)
+    }
+
+    private fun handleWatchState(packet: ByteArray) {
+        if (packet.isEmpty()) return
+        val sequence = packet.getOrElse(1) { 0 }
+        when (packet[0]) {
+            BleProtocol.PHONE_COMMAND_FIND_START -> startRinging(sequence)
+            BleProtocol.PHONE_COMMAND_FIND_STOP -> stopRinging("手表停止命令")
+            else -> Log.w(TAG, "Ignored unknown watch state: 0x%02X".format(packet[0].toInt() and 0xff))
+        }
+    }
+
+    private fun sendFindWatchCommand() {
+        if (!BleServerStatus.state.value.commandChannelReady) {
+            BleServerStatus.update { it.copy(lastMessage = "等待手表连接后发送查找命令") }
+            return
+        }
+        val gatt = bluetoothGatt
+        val characteristic = controlCharacteristic
+        if (gatt == null || characteristic == null) {
+            BleServerStatus.update { it.copy(lastMessage = "手表命令通道暂不可用") }
+            return
+        }
+
+        watchSequence = (watchSequence + 1).toByte()
+        val packet = BleProtocol.packet(BleProtocol.WATCH_COMMAND_FIND_START, watchSequence)
+        pendingFindWatch = false
+        val started = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(
+                    characteristic,
+                    packet,
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                ) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                characteristic.value = packet
+                @Suppress("DEPRECATION")
+                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(characteristic)
+            }
+        } catch (exception: SecurityException) {
+            setError("蓝牙连接权限已被撤销")
+            false
+        }
+        if (!started) {
+            pendingFindWatch = true
+            BleServerStatus.update { it.copy(lastMessage = "查找手表命令未能发送") }
+        }
+    }
+
+    private fun startRinging(sequence: Byte) {
+        if (isRinging) {
+            BleServerStatus.update { it.copy(ringing = true, lastMessage = "手机正在响铃") }
+            return
+        }
+        isRinging = true
+        try {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ringtone = uri?.let { RingtoneManager.getRingtone(this, it) }
+            ringtone?.play()
+            vibrator()?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 650, 650), 0))
+            wakeLock?.takeUnless { it.isHeld }?.acquire(10 * 60 * 1000L)
+            BleServerStatus.update {
+                it.copy(ringing = true, lastMessage = "手机正在响铃（序号 ${sequence.toInt() and 0xff}）")
+            }
+            Log.i(TAG, "Ringing started by watch")
+        } catch (exception: Exception) {
+            Log.e(TAG, "Unable to start ringing", exception)
+            isRinging = false
+            stopAlertHardware()
+            BleServerStatus.update { it.copy(ringing = false, lastMessage = "无法响铃：${exception.message}") }
+        }
+    }
+
+    private fun stopRinging(reason: String) {
+        if (isRinging) Log.i(TAG, "Ringing stopped: $reason")
+        isRinging = false
+        stopAlertHardware()
+        BleServerStatus.update { it.copy(ringing = false, lastMessage = "空闲：$reason") }
+    }
+
+    private fun stopAlertHardware() {
+        try {
+            ringtone?.stop()
+            ringtone = null
+            vibrator()?.cancel()
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+        } catch (exception: Exception) {
+            Log.w(TAG, "Unable to stop alert cleanly", exception)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun vibrator(): Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        getSystemService(VibratorManager::class.java)?.defaultVibrator
+    } else {
+        getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+    }
+
+    private fun handleLinkFailure(message: String, scanImmediately: Boolean) {
+        Log.w(TAG, message)
+        closeGatt()
+        BleServerStatus.update {
+            it.copy(connected = false, commandChannelReady = false, lastMessage = message)
+        }
+        if (scanImmediately) scheduleScanFallback("$message，正在扫描回退") else scheduleReconnect(message)
+    }
+
+    private fun handleProtocolIncompatibility() {
+        val message = "手表查找协议不兼容，请更新固件后重新连接"
+
+        Log.e(TAG, message)
+        protocolIncompatible = true
+        pendingFindWatch = false
+        pendingScanFallbackReason = null
+        handler.removeCallbacks(reconnectTask)
+        stopScan()
+        closeGatt()
+        BleServerStatus.update {
+            it.copy(scanning = false, scanRequestPending = false, scanBackoff = false,
+                protocolIncompatible = true, connected = false, commandChannelReady = false,
+                lastMessage = message)
+        }
+    }
+
+    private fun scheduleScanFallback(message: String) {
+        pendingScanFallbackReason = message
+        scheduleReconnect(message, RECONNECT_DELAY_MS, preserveScanFallback = true)
+    }
+
+    private fun scheduleReconnect(
+        message: String,
+        delayMs: Long = RECONNECT_DELAY_MS,
+        scanBackoff: Boolean = false,
+        preserveScanFallback: Boolean = false
+    ) {
+        if (!BleServerStatus.state.value.serviceRunning || protocolIncompatible) return
+        if (!preserveScanFallback) pendingScanFallbackReason = null
+        handler.removeCallbacks(reconnectTask)
+        val delaySeconds = (delayMs + 999L) / 1_000L
+        BleServerStatus.update {
+            it.copy(scanning = false, scanRequestPending = false, scanBackoff = scanBackoff,
+                connected = false, commandChannelReady = false,
+                lastMessage = "$message，${delaySeconds} 秒后重试")
+        }
+        handler.postDelayed(reconnectTask, delayMs)
+    }
+
+    private fun closeGatt(expectedGatt: BluetoothGatt? = null) {
+        handler.removeCallbacks(connectionTimeout)
+        val gatt = expectedGatt ?: bluetoothGatt
+        if (expectedGatt == null || expectedGatt === bluetoothGatt) {
+            bluetoothGatt = null
+            controlCharacteristic = null
+            stateCharacteristic = null
+            isConnecting = false
+        }
+        try {
+            gatt?.disconnect()
+            gatt?.close()
+        } catch (exception: SecurityException) {
+            Log.w(TAG, "Unable to close GATT after permission change", exception)
+        }
+    }
+
+    private fun setError(message: String) {
+        Log.e(TAG, message)
+        BleServerStatus.update { it.copy(scanning = false, scanRequestPending = false,
+            scanBackoff = false, connected = false, commandChannelReady = false, lastMessage = message) }
+    }
+
+    private fun stopBleResources() {
+        handler.removeCallbacks(scanTimeout)
+        handler.removeCallbacks(scanActivation)
+        handler.removeCallbacks(connectionTimeout)
+        handler.removeCallbacks(reconnectTask)
+        pendingScanFallbackReason = null
+        scanBlockedUntilMs = 0L
+        stopScan()
+        closeGatt()
+        scanner = null
+    }
+
+    override fun onDestroy() {
+        Log.i(TAG, "BLE client service stopped")
+        stopRinging("服务已停止")
+        stopBleResources()
+        unregisterReceiver(bluetoothStateReceiver)
+        BleServerStatus.update {
+            it.copy(serviceRunning = false, scanning = false, scanRequestPending = false,
+                scanBackoff = false, protocolIncompatible = false, connected = false,
+                commandChannelReady = false, ringing = false, lastMessage = "服务已停止")
+        }
+        super.onDestroy()
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                getString(R.string.notification_channel_name),
+                NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildNotification(): Notification {
+        val openApp = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val stopRinging = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, BleServerService::class.java).setAction(ACTION_STOP_RINGING),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        return Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(getString(R.string.notification_title))
+            .setContentText(getString(R.string.notification_text))
+            .setContentIntent(openApp)
+            .addAction(0, getString(R.string.notification_stop_ringing), stopRinging)
+            .setOngoing(true)
+            .build()
+    }
+}
