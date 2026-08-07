@@ -102,6 +102,7 @@ cd hsp
 | Control Characteristic | `2d6a5001-8d5c-4f6a-a9b2-1c0c9e7a1000` | 手机写入，控制手表 |
 | State Characteristic | `2d6a5002-8d5c-4f6a-a9b2-1c0c9e7a1000` | 手表通知，控制手机 |
 | Watch Command Characteristic | `2d6a5003-8d5c-4f6a-a9b2-1c0c9e7a1000` | 预留手表命令通道 |
+| Device Status Characteristic | `2d6a5004-8d5c-4f6a-a9b2-1c0c9e7a1000` | 手表读取/通知：电量、充电状态、固件版本 |
 | CCCD | `00002902-0000-1000-8000-00805f9b34fb` | BLE 通知描述符 |
 
 ### 数据包格式
@@ -112,6 +113,20 @@ cd hsp
 | --- | --- |
 | Byte 0 | 命令字 |
 | Byte 1 | 序号，用于区分连续命令 |
+
+### 设备状态包
+
+`Device Status Characteristic` 的数据包长度可变，格式如下：
+
+| 字节 | 含义 |
+| --- | --- |
+| Byte 0 | 状态协议版本，当前为 `0x01` |
+| Byte 1 | 标记位：bit0 BLE 已开启，bit1 App 已连接，bit2 电量有效，bit3 正在充电 |
+| Byte 2 | 电量百分比；电量未准备好时为 `0xFF` |
+| Byte 3 | 固件版本字符串长度 |
+| Byte 4... | ASCII 固件版本字符串，例如 `0.1.0` |
+
+App 通过 GATT 连接回调维护连接状态，并先订阅 `State Characteristic`、再订阅 `Device Status Characteristic`。订阅成功后手表立即发送状态快照；之后仅在电量或充电状态变化时更新。
 
 ### 命令字
 
@@ -134,20 +149,22 @@ cd hsp
 | 停止 BLE 查找服务 | 已实现 | `BleServerService.stop(context)` |
 | 查找手表 | 已实现 | `BleServerService.findWatch(context)` |
 | 停止手机响铃 | 已实现 | `BleServerService.stopRinging(context)` |
+| 查看手表状态 | 已实现 | 显示 BLE 连接、电量、充电状态与固件版本 |
 | 绑定/解绑手表 | TODO | 预留设备管理入口 |
-| 手表固件版本读取 | TODO | 预留 GATT 版本特征或扩展命令 |
-| 电量/状态同步 | TODO | 预留状态同步接口 |
+| 手表固件版本读取 | 已实现 | 通过 Device Status Characteristic 接收 |
+| 电量/状态同步 | 已实现 | 通过 Device Status Characteristic 接收 |
 | OTA 升级 | TODO | 预留固件升级流程 |
 
 ### 固件侧接口
 
 | 模块 | 当前状态 | 说明 |
 | --- | --- | --- |
-| BLE 广播 | TODO | 需要广播 HSP Service UUID |
-| GATT 服务 | TODO | 需要实现 Service、Control、State 等特征 |
-| 查找手表响应 | TODO | 收到 `0x11` 后启动振动/蜂鸣/亮屏等提醒 |
-| 查找手机请求 | TODO | 通过 State Notify 发送 `0x01` |
-| 停止查找 | TODO | 支持 `0x02`/`0x12` 停止提醒 |
+| BLE 广播 | 已实现 | 广播 HSP Service UUID 并支持 App 扫描/直连 |
+| GATT 服务 | 已实现 | 提供 Control、State、Device Status 等特征 |
+| 查找手表响应 | 已实现 | 收到 `0x11` 后启动振动提醒 |
+| 查找手机请求 | 已实现 | 通过 State Notify 发送 `0x01` |
+| 停止查找 | 已实现 | 支持 `0x02`/`0x12` 停止提醒 |
+| 状态同步 | 已实现 | 推送电量、充电状态和固件版本 |
 
 ### 调试接口
 

@@ -89,6 +89,7 @@ class BleServerService : Service() {
     private var bluetoothGatt: BluetoothGatt? = null
     private var controlCharacteristic: BluetoothGattCharacteristic? = null
     private var stateCharacteristic: BluetoothGattCharacteristic? = null
+    private var deviceStatusCharacteristic: BluetoothGattCharacteristic? = null
     private var isScanning = false
     private var scanRequestPending = false
     private var scanBlockedUntilMs = 0L
@@ -144,7 +145,8 @@ class BleServerService : Service() {
                 stopBleResources()
                 BleServerStatus.update {
                     it.copy(scanning = false, scanRequestPending = false, scanBackoff = false,
-                        connected = false, commandChannelReady = false, lastMessage = "蓝牙已关闭")
+                        connected = false, commandChannelReady = false, statusChannelReady = false,
+                        lastMessage = "蓝牙已关闭")
                 }
             }
         }
@@ -245,7 +247,7 @@ class BleServerService : Service() {
         isConnecting = true
         BleServerStatus.update {
             it.copy(scanning = false, scanRequestPending = false, scanBackoff = false,
-                connected = false, commandChannelReady = false,
+                connected = false, commandChannelReady = false, statusChannelReady = false,
                 watchAddress = device.address,
                 lastMessage = if (fromCachedAddress) "正在直连已保存的手表" else "正在连接扫描到的手表")
         }
@@ -365,7 +367,7 @@ class BleServerService : Service() {
                 pendingScanFallbackReason = null
                 Log.i(TAG, "Connected to watch ${gatt.device.address}; discovering services")
                 BleServerStatus.update {
-                    it.copy(connected = true, commandChannelReady = false,
+                    it.copy(connected = true, commandChannelReady = false, statusChannelReady = false,
                         watchAddress = gatt.device.address, lastMessage = "已连接手表，正在发现服务")
                 }
                 if (!gatt.discoverServices()) {
@@ -378,7 +380,7 @@ class BleServerService : Service() {
             Log.w(TAG, "GATT disconnected status=$status state=$newState")
             closeGatt(gatt)
             BleServerStatus.update {
-                it.copy(connected = false, commandChannelReady = false,
+                it.copy(connected = false, commandChannelReady = false, statusChannelReady = false,
                     lastMessage = "手表连接已断开：$status")
             }
             if (useScanFallback) scheduleScanFallback("缓存地址不可用，正在扫描手表")
@@ -395,7 +397,9 @@ class BleServerService : Service() {
             val service = gatt.getService(BleProtocol.SERVICE_UUID)
             controlCharacteristic = service?.getCharacteristic(BleProtocol.CONTROL_UUID)
             stateCharacteristic = service?.getCharacteristic(BleProtocol.STATE_UUID)
-            if (controlCharacteristic == null || stateCharacteristic == null) {
+            deviceStatusCharacteristic = service?.getCharacteristic(BleProtocol.DEVICE_STATUS_UUID)
+            if (controlCharacteristic == null || stateCharacteristic == null ||
+                deviceStatusCharacteristic == null) {
                 handleProtocolIncompatibility()
                 return
             }
@@ -404,24 +408,40 @@ class BleServerService : Service() {
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (gatt !== bluetoothGatt || descriptor.characteristic.uuid != BleProtocol.STATE_UUID) return
+            if (gatt !== bluetoothGatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 handleLinkFailure("无法订阅手表状态：$status", scanImmediately = false)
                 return
             }
 
-            BleServerStatus.update {
-                it.copy(connected = true, commandChannelReady = true,
-                    watchAddress = gatt.device.address, lastMessage = "已直连手表，查找通道已就绪")
+            when (descriptor.characteristic.uuid) {
+                BleProtocol.STATE_UUID -> {
+                    BleServerStatus.update {
+                        it.copy(connected = true, commandChannelReady = false,
+                            statusChannelReady = false, watchAddress = gatt.device.address,
+                            lastMessage = "正在订阅手表状态")
+                    }
+                    Log.i(TAG, "HSP STATE notification subscribed")
+                    enableDeviceStatusNotifications(gatt, deviceStatusCharacteristic!!)
+                }
+                BleProtocol.DEVICE_STATUS_UUID -> {
+                    BleServerStatus.update {
+                        it.copy(connected = true, commandChannelReady = true,
+                            statusChannelReady = true, watchAddress = gatt.device.address,
+                            lastMessage = "手表已连接，状态同步已就绪")
+                    }
+                    Log.i(TAG, "HSP device status notification subscribed")
+                    if (pendingFindWatch) sendFindWatchCommand()
+                }
             }
-            Log.i(TAG, "HSP STATE notification subscribed")
-            if (pendingFindWatch) sendFindWatchCommand()
         }
 
         @Deprecated("Deprecated in Java")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            if (gatt === bluetoothGatt && characteristic.uuid == BleProtocol.STATE_UUID) {
-                handleWatchState(characteristic.value ?: return)
+            if (gatt !== bluetoothGatt) return
+            when (characteristic.uuid) {
+                BleProtocol.STATE_UUID -> handleWatchState(characteristic.value ?: return)
+                BleProtocol.DEVICE_STATUS_UUID -> handleDeviceStatus(characteristic.value ?: return)
             }
         }
 
@@ -430,8 +450,10 @@ class BleServerService : Service() {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
-            if (gatt === bluetoothGatt && characteristic.uuid == BleProtocol.STATE_UUID) {
-                handleWatchState(value)
+            if (gatt !== bluetoothGatt) return
+            when (characteristic.uuid) {
+                BleProtocol.STATE_UUID -> handleWatchState(value)
+                BleProtocol.DEVICE_STATUS_UUID -> handleDeviceStatus(value)
             }
         }
 
@@ -464,6 +486,25 @@ class BleServerService : Service() {
         if (!started) handleLinkFailure("无法请求手表状态通知", scanImmediately = false)
     }
 
+    private fun enableDeviceStatusNotifications(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        val descriptor = characteristic.getDescriptor(BleProtocol.CCCD_UUID)
+        if (descriptor == null || !gatt.setCharacteristicNotification(characteristic, true)) {
+            handleLinkFailure("手表设备状态通知不可用", scanImmediately = false)
+            return
+        }
+
+        val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
+                BluetoothStatusCodes.SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            gatt.writeDescriptor(descriptor)
+        }
+        if (!started) handleLinkFailure("无法请求手表设备状态通知", scanImmediately = false)
+    }
+
     private fun handleWatchState(packet: ByteArray) {
         if (packet.isEmpty()) return
         val sequence = packet.getOrElse(1) { 0 }
@@ -472,6 +513,29 @@ class BleServerService : Service() {
             BleProtocol.PHONE_COMMAND_FIND_STOP -> stopRinging("手表停止命令")
             else -> Log.w(TAG, "Ignored unknown watch state: 0x%02X".format(packet[0].toInt() and 0xff))
         }
+    }
+
+    private fun handleDeviceStatus(packet: ByteArray) {
+        val status = BleProtocol.decodeDeviceStatus(packet)
+        if (status == null) {
+            Log.w(TAG, "Ignored malformed watch device status packet")
+            return
+        }
+
+        BleServerStatus.update {
+            it.copy(
+                watchStatus = WatchDeviceStatus(
+                    bleEnabled = status.bleEnabled,
+                    companionConnected = status.companionConnected,
+                    batteryValid = status.batteryValid,
+                    batteryPercent = status.batteryPercent,
+                    charging = status.charging,
+                    firmwareVersion = status.firmwareVersion,
+                    receivedAtMillis = System.currentTimeMillis()
+                )
+            )
+        }
+        Log.i(TAG, "Watch status: battery=${status.batteryPercent}, charging=${status.charging}, firmware=${status.firmwareVersion}")
     }
 
     private fun sendFindWatchCommand() {
@@ -543,7 +607,8 @@ class BleServerService : Service() {
         Log.w(TAG, message)
         closeGatt()
         BleServerStatus.update {
-            it.copy(connected = false, commandChannelReady = false, lastMessage = message)
+            it.copy(connected = false, commandChannelReady = false, statusChannelReady = false,
+                lastMessage = message)
         }
         if (scanImmediately) scheduleScanFallback("$message，正在扫描回退") else scheduleReconnect(message)
     }
@@ -561,6 +626,7 @@ class BleServerService : Service() {
         BleServerStatus.update {
             it.copy(scanning = false, scanRequestPending = false, scanBackoff = false,
                 protocolIncompatible = true, connected = false, commandChannelReady = false,
+                statusChannelReady = false,
                 lastMessage = message)
         }
     }
@@ -582,7 +648,7 @@ class BleServerService : Service() {
         val delaySeconds = (delayMs + 999L) / 1_000L
         BleServerStatus.update {
             it.copy(scanning = false, scanRequestPending = false, scanBackoff = scanBackoff,
-                connected = false, commandChannelReady = false,
+                connected = false, commandChannelReady = false, statusChannelReady = false,
                 lastMessage = "$message，${delaySeconds} 秒后重试")
         }
         handler.postDelayed(reconnectTask, delayMs)
@@ -595,6 +661,7 @@ class BleServerService : Service() {
             bluetoothGatt = null
             controlCharacteristic = null
             stateCharacteristic = null
+            deviceStatusCharacteristic = null
             isConnecting = false
         }
         try {
@@ -608,7 +675,8 @@ class BleServerService : Service() {
     private fun setError(message: String) {
         Log.e(TAG, message)
         BleServerStatus.update { it.copy(scanning = false, scanRequestPending = false,
-            scanBackoff = false, connected = false, commandChannelReady = false, lastMessage = message) }
+            scanBackoff = false, connected = false, commandChannelReady = false,
+            statusChannelReady = false, lastMessage = message) }
     }
 
     private fun stopBleResources() {
@@ -631,7 +699,8 @@ class BleServerService : Service() {
         BleServerStatus.update {
             it.copy(serviceRunning = false, scanning = false, scanRequestPending = false,
                 scanBackoff = false, protocolIncompatible = false, connected = false,
-                commandChannelReady = false, ringing = false, lastMessage = "服务已停止")
+                commandChannelReady = false, statusChannelReady = false,
+                ringing = false, lastMessage = "服务已停止")
         }
         super.onDestroy()
     }
@@ -661,7 +730,7 @@ class BleServerService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_hsp)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(getString(R.string.notification_text))
             .setContentIntent(openApp)

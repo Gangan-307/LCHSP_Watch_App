@@ -9,6 +9,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+data class WatchDeviceStatus(
+    val bleEnabled: Boolean = false,
+    val companionConnected: Boolean = false,
+    val batteryValid: Boolean = false,
+    val batteryPercent: Int? = null,
+    val charging: Boolean = false,
+    val firmwareVersion: String? = null,
+    val receivedAtMillis: Long? = null
+)
+
 data class BleUiState(
     val hasBleHardware: Boolean = false,
     val bluetoothEnabled: Boolean = false,
@@ -21,7 +31,9 @@ data class BleUiState(
     val protocolIncompatible: Boolean = false,
     val connected: Boolean = false,
     val commandChannelReady: Boolean = false,
+    val statusChannelReady: Boolean = false,
     val watchAddress: String? = null,
+    val watchStatus: WatchDeviceStatus = WatchDeviceStatus(),
     val ringing: Boolean = false,
     val lastMessage: String = "等待启动服务"
 )

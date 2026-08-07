@@ -67,6 +67,8 @@ fun HspWatchScreen(
 
             ConnectionSummaryCard(state)
 
+            WatchStatusCard(state)
+
             PrimaryActionButton(
                 state = state,
                 onFindWatch = onFindWatch,
@@ -178,6 +180,47 @@ private fun ConnectionSummaryCard(state: BleUiState) {
 }
 
 @Composable
+private fun WatchStatusCard(state: BleUiState) {
+    val watchStatus = state.watchStatus
+    val batteryText = when {
+        !watchStatus.batteryValid -> "等待电量数据"
+        else -> "${watchStatus.batteryPercent}%"
+    }
+    val chargingText = when {
+        !watchStatus.batteryValid -> "等待充电状态"
+        watchStatus.charging -> "充电中"
+        else -> "未充电"
+    }
+    val connectionText = if (state.connected) "已连接" else "未连接"
+    val connectionColor = if (state.connected) Color(0xFF207A3B) else MaterialTheme.colorScheme.error
+    val syncText = if (state.statusChannelReady) "已订阅" else "等待同步"
+    val syncColor = if (state.statusChannelReady) Color(0xFF207A3B) else MaterialTheme.colorScheme.onSurfaceVariant
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.small,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("手表状态", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            StatusDetailRow("连接", connectionText, connectionColor)
+            StatusDetailRow("状态同步", syncText, syncColor)
+            StatusDetailRow("电量", batteryText, MaterialTheme.colorScheme.onSurface)
+            StatusDetailRow(
+                "充电",
+                chargingText,
+                if (watchStatus.charging) Color(0xFF207A3B) else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            StatusDetailRow(
+                "固件版本",
+                watchStatus.firmwareVersion ?: "等待版本信息",
+                MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+@Composable
 private fun PrimaryActionButton(
     state: BleUiState,
     onFindWatch: () -> Unit,
@@ -276,6 +319,7 @@ private fun StatusCard(state: BleUiState) {
             StatusDetailRow("扫描回退", scanStatusText(state), scanStatusColor(state))
             StatusRow("手表连接", state.connected)
             StatusRow("手表命令通道", state.commandChannelReady)
+            StatusRow("手表状态同步", state.statusChannelReady)
             if (state.protocolIncompatible) {
                 StatusDetailRow("手表协议", "不兼容", MaterialTheme.colorScheme.error)
             }
