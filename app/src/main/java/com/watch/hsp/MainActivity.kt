@@ -64,7 +64,7 @@ private fun HspWatchApp() {
         BleServerStatus.refreshPrerequisites(context)
         if (result.values.any { !it }) {
             BleServerStatus.update {
-                it.copy(lastMessage = "部分权限被拒绝，启动服务需要蓝牙权限")
+                it.copy(lastMessage = "部分权限被拒绝，定位和天气同步可能不可用")
             }
         }
     }
@@ -88,6 +88,7 @@ private fun HspWatchApp() {
         onStartService = { BleServerService.start(context) },
         onStopService = { BleServerService.stop(context) },
         onFindWatch = { BleServerService.findWatch(context) },
+        onSyncPhoneData = { BleServerService.syncPhoneData(context) },
         onStopRinging = { BleServerService.stopRinging(context) }
     )
 }
@@ -96,11 +97,18 @@ private fun requiredRuntimePermissions(): Array<String> = when {
     Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
         Manifest.permission.BLUETOOTH_SCAN,
         Manifest.permission.BLUETOOTH_CONNECT,
-        Manifest.permission.POST_NOTIFICATIONS
+        Manifest.permission.POST_NOTIFICATIONS,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION
     )
     Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> arrayOf(
         Manifest.permission.BLUETOOTH_SCAN,
-        Manifest.permission.BLUETOOTH_CONNECT
+        Manifest.permission.BLUETOOTH_CONNECT,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION
     )
-    else -> arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    else -> arrayOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    )
 }

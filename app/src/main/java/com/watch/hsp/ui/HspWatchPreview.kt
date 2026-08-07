@@ -33,6 +33,7 @@ private fun HspWatchConnectedPreview() {
             connected = true,
             commandChannelReady = true,
             statusChannelReady = true,
+            syncChannelReady = true,
             watchAddress = "AA:BB:CC:12:34:56",
             watchStatus = WatchDeviceStatus(
                 batteryValid = true,
@@ -78,6 +79,7 @@ private fun HspWatchPreview(state: BleUiState, showDebugDetails: Boolean = false
             onStartService = {},
             onStopService = {},
             onFindWatch = {},
+            onSyncPhoneData = {},
             onStopRinging = {},
             showDebugDetailsInitially = showDebugDetails
         )

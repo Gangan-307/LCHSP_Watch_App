@@ -27,6 +27,7 @@ data class BleUiState(
     val hasBleHardware: Boolean = false,
     val bluetoothEnabled: Boolean = false,
     val blePermissionsGranted: Boolean = false,
+    val locationPermissionGranted: Boolean = false,
     val notificationsGranted: Boolean = true,
     val serviceRunning: Boolean = false,
     val scanning: Boolean = false,
@@ -36,6 +37,7 @@ data class BleUiState(
     val connected: Boolean = false,
     val commandChannelReady: Boolean = false,
     val statusChannelReady: Boolean = false,
+    val syncChannelReady: Boolean = false,
     val watchAddress: String? = null,
     val watchStatus: WatchDeviceStatus = WatchDeviceStatus(),
     val ringing: Boolean = false,
@@ -64,13 +66,18 @@ object BleServerStatus {
         }
         val notificationGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
+                PackageManager.PERMISSION_GRANTED
+        val locationPermissionGranted = listOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ).any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
 
         update {
             it.copy(
                 hasBleHardware = context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE),
                 bluetoothEnabled = adapter?.isEnabled == true,
                 blePermissionsGranted = blePermissionGranted,
+                locationPermissionGranted = locationPermissionGranted,
                 notificationsGranted = notificationGranted
             )
         }

@@ -48,6 +48,7 @@ fun HspWatchScreen(
     onStartService: () -> Unit,
     onStopService: () -> Unit,
     onFindWatch: () -> Unit,
+    onSyncPhoneData: () -> Unit,
     onStopRinging: () -> Unit,
     showDebugDetailsInitially: Boolean = false
 ) {
@@ -76,7 +77,10 @@ fun HspWatchScreen(
                 onStopRinging = onStopRinging
             )
 
-            if (!state.blePermissionsGranted || !state.notificationsGranted) {
+            PhoneSyncButton(state = state, onSyncPhoneData = onSyncPhoneData)
+
+            if (!state.blePermissionsGranted || !state.notificationsGranted ||
+                !state.locationPermissionGranted) {
                 PermissionNoticeCard(
                     state = state,
                     onClick = onRequestPermissions,
@@ -203,6 +207,11 @@ private fun WatchStatusCard(state: BleUiState) {
     } else {
         "--"
     }
+    val phoneSyncText = when {
+        state.syncChannelReady -> "已就绪"
+        state.connected -> "需更新手表固件"
+        else -> "等待连接"
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -213,6 +222,11 @@ private fun WatchStatusCard(state: BleUiState) {
             Text("手表状态", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             StatusDetailRow("连接", connectionText, connectionColor)
             StatusDetailRow("状态同步", syncText, syncColor)
+            StatusDetailRow(
+                "手机同步",
+                phoneSyncText,
+                if (state.syncChannelReady) Color(0xFF207A3B) else MaterialTheme.colorScheme.onSurfaceVariant
+            )
             StatusDetailRow("电量", batteryText, MaterialTheme.colorScheme.onSurface)
             StatusDetailRow(
                 "充电",
@@ -265,6 +279,26 @@ private fun PrimaryActionButton(
                 state.commandChannelReady -> "查找手表"
                 state.serviceRunning -> "连接后查找手表"
                 else -> "启动并查找手表"
+            }
+        )
+    }
+}
+
+@Composable
+private fun PhoneSyncButton(state: BleUiState, onSyncPhoneData: () -> Unit) {
+    val readyForBleAction = state.hasBleHardware && state.bluetoothEnabled && state.blePermissionsGranted
+    FilledTonalButton(
+        onClick = onSyncPhoneData,
+        enabled = readyForBleAction,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+    ) {
+        Text(
+            when {
+                state.syncChannelReady -> "同步手机时间、位置和天气"
+                state.serviceRunning -> "连接后同步手机数据"
+                else -> "启动并同步手机数据"
             }
         )
     }
@@ -325,6 +359,7 @@ private fun StatusCard(state: BleUiState) {
             StatusRow("BLE 硬件", state.hasBleHardware)
             StatusRow("蓝牙", state.bluetoothEnabled)
             StatusRow("蓝牙权限", state.blePermissionsGranted)
+            StatusRow("定位权限", state.locationPermissionGranted)
             StatusRow("通知权限", state.notificationsGranted)
             HorizontalDivider()
             StatusRow("前台服务", state.serviceRunning)
@@ -332,6 +367,7 @@ private fun StatusCard(state: BleUiState) {
             StatusRow("手表连接", state.connected)
             StatusRow("手表命令通道", state.commandChannelReady)
             StatusRow("手表状态同步", state.statusChannelReady)
+            StatusRow("手机同步通道", state.syncChannelReady)
             if (state.protocolIncompatible) {
                 StatusDetailRow("手表协议", "不兼容", MaterialTheme.colorScheme.error)
             }
@@ -471,9 +507,10 @@ private fun connectionSummary(state: BleUiState): ConnectionSummary {
 private fun permissionNoticeText(state: BleUiState): String {
     val missing = buildList {
         if (!state.blePermissionsGranted) add("蓝牙权限")
+        if (!state.locationPermissionGranted) add("定位权限")
         if (!state.notificationsGranted) add("通知权限")
     }
-    return "还需要${missing.joinToString("、")}，用于连接手表并保持前台服务。"
+    return "还需要${missing.joinToString("、")}，用于连接手表及同步位置和天气。"
 }
 
 private fun scanStatusText(state: BleUiState): String = when {
