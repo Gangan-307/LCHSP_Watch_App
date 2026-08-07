@@ -16,6 +16,10 @@ data class WatchDeviceStatus(
     val batteryPercent: Int? = null,
     val charging: Boolean = false,
     val firmwareVersion: String? = null,
+    val activityValid: Boolean = false,
+    val steps: Long? = null,
+    val caloriesKcal: Int? = null,
+    val distanceMeters: Long? = null,
     val receivedAtMillis: Long? = null
 )
 

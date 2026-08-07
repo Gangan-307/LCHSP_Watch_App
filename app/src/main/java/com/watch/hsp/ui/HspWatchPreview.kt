@@ -3,6 +3,7 @@ package com.watch.hsp.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import com.watch.hsp.BleUiState
+import com.watch.hsp.WatchDeviceStatus
 import com.watch.hsp.ui.theme.HspTheme
 
 @Preview(name = "需要授权", showBackground = true, widthDp = 360, heightDp = 720)
@@ -31,7 +32,17 @@ private fun HspWatchConnectedPreview() {
             serviceRunning = true,
             connected = true,
             commandChannelReady = true,
+            statusChannelReady = true,
             watchAddress = "AA:BB:CC:12:34:56",
+            watchStatus = WatchDeviceStatus(
+                batteryValid = true,
+                batteryPercent = 82,
+                activityValid = true,
+                steps = 5820,
+                caloriesKcal = 233,
+                distanceMeters = 4074,
+                firmwareVersion = "0.1.0"
+            ),
             lastMessage = "已直连手表，查找通道已就绪"
         )
     )

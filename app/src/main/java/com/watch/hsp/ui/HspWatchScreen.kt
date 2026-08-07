@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.watch.hsp.BleUiState
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -195,6 +196,13 @@ private fun WatchStatusCard(state: BleUiState) {
     val connectionColor = if (state.connected) Color(0xFF207A3B) else MaterialTheme.colorScheme.error
     val syncText = if (state.statusChannelReady) "已订阅" else "等待同步"
     val syncColor = if (state.statusChannelReady) Color(0xFF207A3B) else MaterialTheme.colorScheme.onSurfaceVariant
+    val stepsText = if (watchStatus.activityValid) "${watchStatus.steps ?: 0} 步" else "等待步数数据"
+    val caloriesText = if (watchStatus.activityValid) "${watchStatus.caloriesKcal ?: 0} kcal" else "--"
+    val distanceText = if (watchStatus.activityValid) {
+        String.format(Locale.US, "%.1f km", (watchStatus.distanceMeters ?: 0) / 1000.0)
+    } else {
+        "--"
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -211,6 +219,10 @@ private fun WatchStatusCard(state: BleUiState) {
                 chargingText,
                 if (watchStatus.charging) Color(0xFF207A3B) else MaterialTheme.colorScheme.onSurfaceVariant
             )
+            HorizontalDivider()
+            StatusDetailRow("今日步数", stepsText, MaterialTheme.colorScheme.onSurface)
+            StatusDetailRow("估算消耗", caloriesText, MaterialTheme.colorScheme.onSurface)
+            StatusDetailRow("估算距离", distanceText, MaterialTheme.colorScheme.onSurface)
             StatusDetailRow(
                 "固件版本",
                 watchStatus.firmwareVersion ?: "等待版本信息",

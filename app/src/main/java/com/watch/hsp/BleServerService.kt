@@ -531,11 +531,15 @@ class BleServerService : Service() {
                     batteryPercent = status.batteryPercent,
                     charging = status.charging,
                     firmwareVersion = status.firmwareVersion,
+                    activityValid = status.activityValid,
+                    steps = status.steps,
+                    caloriesKcal = status.caloriesKcal,
+                    distanceMeters = status.distanceMeters,
                     receivedAtMillis = System.currentTimeMillis()
                 )
             )
         }
-        Log.i(TAG, "Watch status: battery=${status.batteryPercent}, charging=${status.charging}, firmware=${status.firmwareVersion}")
+        Log.i(TAG, "Watch status: battery=${status.batteryPercent}, charging=${status.charging}, steps=${status.steps}, firmware=${status.firmwareVersion}")
     }
 
     private fun sendFindWatchCommand() {
