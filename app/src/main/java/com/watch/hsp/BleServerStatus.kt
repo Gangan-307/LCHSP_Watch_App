@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.core.app.NotificationManagerCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +30,7 @@ data class BleUiState(
     val blePermissionsGranted: Boolean = false,
     val locationPermissionGranted: Boolean = false,
     val notificationsGranted: Boolean = true,
+    val messageNotificationAccessEnabled: Boolean = false,
     val serviceRunning: Boolean = false,
     val scanning: Boolean = false,
     val scanRequestPending: Boolean = false,
@@ -71,6 +73,9 @@ object BleServerStatus {
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
         ).any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+        val messageNotificationAccessEnabled =
+            NotificationManagerCompat.getEnabledListenerPackages(context)
+                .contains(context.packageName)
 
         update {
             it.copy(
@@ -78,7 +83,8 @@ object BleServerStatus {
                 bluetoothEnabled = adapter?.isEnabled == true,
                 blePermissionsGranted = blePermissionGranted,
                 locationPermissionGranted = locationPermissionGranted,
-                notificationsGranted = notificationGranted
+                notificationsGranted = notificationGranted,
+                messageNotificationAccessEnabled = messageNotificationAccessEnabled
             )
         }
     }

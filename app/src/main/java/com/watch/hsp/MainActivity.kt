@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -89,6 +90,9 @@ private fun HspWatchApp() {
         onStopService = { BleServerService.stop(context) },
         onFindWatch = { BleServerService.findWatch(context) },
         onSyncPhoneData = { BleServerService.syncPhoneData(context) },
+        onOpenNotificationAccess = {
+            context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        },
         onStopRinging = { BleServerService.stopRinging(context) }
     )
 }

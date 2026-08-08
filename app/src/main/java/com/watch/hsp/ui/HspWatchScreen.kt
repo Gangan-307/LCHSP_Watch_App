@@ -49,6 +49,7 @@ fun HspWatchScreen(
     onStopService: () -> Unit,
     onFindWatch: () -> Unit,
     onSyncPhoneData: () -> Unit,
+    onOpenNotificationAccess: () -> Unit,
     onStopRinging: () -> Unit,
     showDebugDetailsInitially: Boolean = false
 ) {
@@ -78,6 +79,11 @@ fun HspWatchScreen(
             )
 
             PhoneSyncButton(state = state, onSyncPhoneData = onSyncPhoneData)
+
+            NotificationSyncCard(
+                enabled = state.messageNotificationAccessEnabled,
+                onOpenNotificationAccess = onOpenNotificationAccess
+            )
 
             if (!state.blePermissionsGranted || !state.notificationsGranted ||
                 !state.locationPermissionGranted) {
@@ -305,6 +311,20 @@ private fun PhoneSyncButton(state: BleUiState, onSyncPhoneData: () -> Unit) {
 }
 
 @Composable
+private fun NotificationSyncCard(enabled: Boolean, onOpenNotificationAccess: () -> Unit) {
+    NoticeCard(
+        title = "消息通知同步",
+        message = if (enabled) {
+            "已读取短信、微信和 QQ 的新消息，并同步到手表消息页。"
+        } else {
+            "需要在系统设置中允许 HSP Watch 读取通知。"
+        },
+        actionText = if (enabled) "管理通知读取" else "开启通知读取",
+        onClick = onOpenNotificationAccess
+    )
+}
+
+@Composable
 private fun PermissionNoticeCard(state: BleUiState, onClick: () -> Unit) {
     NoticeCard(
         title = "需要授权",
@@ -361,6 +381,7 @@ private fun StatusCard(state: BleUiState) {
             StatusRow("蓝牙权限", state.blePermissionsGranted)
             StatusRow("定位权限", state.locationPermissionGranted)
             StatusRow("通知权限", state.notificationsGranted)
+            StatusRow("消息读取", state.messageNotificationAccessEnabled)
             HorizontalDivider()
             StatusRow("前台服务", state.serviceRunning)
             StatusDetailRow("扫描回退", scanStatusText(state), scanStatusColor(state))

@@ -1,5 +1,6 @@
 package com.watch.hsp
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -23,6 +24,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.icu.text.Transliterator
 import android.location.Address
 import android.location.Geocoder
 import android.location.Location
@@ -33,12 +37,19 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.watch.hsp.data.WatchPreferences
+import com.watch.hsp.data.PhoneNotification
+import com.watch.hsp.data.WatchNotificationRepository
+import com.watch.hsp.service.MediaLyricsMonitor
 import com.watch.hsp.service.PhoneAlertController
+import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.net.URL
 import java.util.ArrayDeque
 import java.util.Locale
@@ -67,6 +78,13 @@ class BleServerService : Service() {
         private const val RECONNECT_DELAY_MS = 3_000L
         private const val SCAN_FAILURE_RETRY_MS = 5_000L
         private const val SCAN_TOO_FREQUENTLY_RETRY_MS = 30_000L
+        private const val LOCATION_CACHE_MAX_AGE_MS = 5 * 60_000L
+        private const val LOCATION_LIVE_MAX_AGE_MS = 60_000L
+        private const val LOCATION_MOCK_MAX_AGE_MS = 30_000L
+        private const val LOCATION_TIMEOUT_MS = 25_000L
+        private const val PHONE_SYNC_WAKE_LOCK_MS = 90_000L
+        private const val WEATHER_MAX_ATTEMPTS = 2
+        private const val WEATHER_RETRY_DELAY_MS = 1_000L
 
         fun start(context: Context) = sendForegroundCommand(context, ACTION_START)
 
@@ -97,7 +115,27 @@ class BleServerService : Service() {
     private val phoneAlertController by lazy { PhoneAlertController(this) }
     private val watchPreferences by lazy { WatchPreferences(this) }
     private val locationManager by lazy { getSystemService(LocationManager::class.java) }
+    private val powerManager by lazy { getSystemService(PowerManager::class.java) }
+    private val cityTransliterator by lazy {
+        runCatching { Transliterator.getInstance("Han-Latin; Latin-ASCII") }
+            .onFailure { exception -> Log.w(TAG, "City transliteration is unavailable", exception) }
+            .getOrNull()
+    }
     private val handler = Handler(Looper.getMainLooper())
+    private val mediaLyricsMonitor by lazy {
+        MediaLyricsMonitor(this, handler, object : MediaLyricsMonitor.Listener {
+            override fun onLyricChanged(generation: Int, lyric: String) {
+                enqueueLyric(generation, lyric)
+            }
+
+            override fun onCoverAvailable(generation: Int, jpeg: ByteArray) {
+                enqueueCover(generation, jpeg)
+            }
+        })
+    }
+    private val notificationDeliveryListener: (PhoneNotification) -> Unit = { message ->
+        handler.post { enqueueWatchNotification(message) }
+    }
 
     private var scanner: BluetoothLeScanner? = null
     private var bluetoothGatt: BluetoothGatt? = null
@@ -117,7 +155,12 @@ class BleServerService : Service() {
     private var watchSequence: Byte = 0
     private val syncWriteQueue = ArrayDeque<ByteArray>()
     private var syncWriteInFlight = false
+    @Volatile
     private var phoneSyncGeneration = 0L
+    private var activeLocationListener: LocationListener? = null
+    private var activeLocationTimeout: Runnable? = null
+    private var phoneSyncWakeLock: PowerManager.WakeLock? = null
+    private var phoneSyncProtectionGeneration: Long? = null
 
     private val scanTimeout = Runnable {
         if (!isScanning && !scanRequestPending) return@Runnable
@@ -175,6 +218,8 @@ class BleServerService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        WatchNotificationRepository.addListener(notificationDeliveryListener)
+        mediaLyricsMonitor.start()
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -211,9 +256,22 @@ class BleServerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun ensureForeground() {
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startForegroundWithTypes(includeLocation = false)
         BleServerStatus.refreshPrerequisites(this)
         BleServerStatus.update { it.copy(serviceRunning = true) }
+    }
+
+    private fun startForegroundWithTypes(includeLocation: Boolean) {
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            var serviceTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            if (includeLocation) {
+                serviceTypes = serviceTypes or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            }
+            startForeground(NOTIFICATION_ID, notification, serviceTypes)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun startBleClient(userInitiated: Boolean = false) {
@@ -280,7 +338,14 @@ class BleServerService : Service() {
         }
 
         try {
-            bluetoothGatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            bluetoothGatt = device.connectGatt(
+                this,
+                false,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_1M_MASK,
+                handler
+            )
             if (bluetoothGatt == null) {
                 handleLinkFailure("无法创建 BLE 连接", scanImmediately = fromCachedAddress)
                 return
@@ -468,6 +533,8 @@ class BleServerService : Service() {
                     }
                     Log.i(TAG, "HSP device status notification subscribed")
                     if (pendingFindWatch) sendFindWatchCommand()
+                    syncSavedNotifications()
+                    mediaLyricsMonitor.syncNow()
                     pendingPhoneSync = true
                     requestPhoneSync()
                 }
@@ -556,6 +623,20 @@ class BleServerService : Service() {
         when (packet[0]) {
             BleProtocol.PHONE_COMMAND_FIND_START -> startRinging(sequence)
             BleProtocol.PHONE_COMMAND_FIND_STOP -> stopRinging("手表停止命令")
+            BleProtocol.PHONE_COMMAND_NOTIFICATION_CLEAR -> {
+                WatchNotificationRepository.clear(this)
+                Log.i(TAG, "Watch cleared all cached notifications")
+            }
+            BleProtocol.PHONE_COMMAND_NOTIFICATION_DELETE -> {
+                if (packet.size < 4) {
+                    Log.w(TAG, "Ignored malformed watch notification delete")
+                    return
+                }
+                val id = (packet[2].toInt() and 0xff) or
+                    ((packet[3].toInt() and 0xff) shl 8)
+                WatchNotificationRepository.remove(this, id)
+                Log.i(TAG, "Watch deleted cached notification id=$id")
+            }
             else -> Log.w(TAG, "Ignored unknown watch state: 0x%02X".format(packet[0].toInt() and 0xff))
         }
     }
@@ -615,12 +696,84 @@ class BleServerService : Service() {
     }
 
     private fun enqueueSyncPacket(packet: ByteArray) {
+        enqueueSyncPackets(listOf(packet))
+    }
+
+    private fun enqueueSyncPackets(
+        packets: List<ByteArray>,
+        priority: Boolean = false,
+        replaceCommands: Set<Byte> = emptySet()
+    ) {
+        if (Looper.myLooper() != handler.looper) {
+            handler.post { enqueueSyncPackets(packets, priority, replaceCommands) }
+            return
+        }
         if (bluetoothGatt == null || syncCharacteristic == null ||
             !BleServerStatus.state.value.connected) {
             return
         }
-        syncWriteQueue.addLast(packet)
+
+        if (replaceCommands.isNotEmpty()) {
+            var index = 0
+            val iterator = syncWriteQueue.iterator()
+            while (iterator.hasNext()) {
+                val queued = iterator.next()
+                val inFlightHead = syncWriteInFlight && index == 0
+                index += 1
+                if (!inFlightHead && queued.firstOrNull() in replaceCommands) iterator.remove()
+            }
+        }
+
+        if (priority && packets.isNotEmpty()) {
+            val inFlight = if (syncWriteInFlight) syncWriteQueue.pollFirst() else null
+            packets.asReversed().forEach(syncWriteQueue::addFirst)
+            if (inFlight != null) syncWriteQueue.addFirst(inFlight)
+        } else {
+            packets.forEach(syncWriteQueue::addLast)
+        }
         drainSyncWriteQueue()
+    }
+
+    private fun syncSavedNotifications() {
+        WatchNotificationRepository.snapshot(this).forEach(::enqueueWatchNotification)
+    }
+
+    private fun enqueueWatchNotification(message: PhoneNotification) {
+        if (Looper.myLooper() != handler.looper) {
+            handler.post { enqueueWatchNotification(message) }
+            return
+        }
+        enqueueSyncPackets(BleProtocol.buildNotificationSyncPackets(
+            id = message.id,
+            app = message.app,
+            title = message.title,
+            body = message.body,
+            postedAtMillis = message.postedAtMillis
+        ))
+    }
+
+    private fun enqueueLyric(generation: Int, lyric: String) {
+        enqueueSyncPackets(
+            packets = BleProtocol.buildLyricSyncPackets(generation, lyric),
+            priority = true,
+            replaceCommands = setOf(
+                BleProtocol.SYNC_COMMAND_LYRIC_BEGIN,
+                BleProtocol.SYNC_COMMAND_LYRIC_DATA
+            )
+        )
+    }
+
+    private fun enqueueCover(generation: Int, jpeg: ByteArray) {
+        val packets = runCatching { BleProtocol.buildCoverSyncPackets(generation, jpeg) }
+            .onFailure { Log.w(TAG, "Ignored invalid media cover", it) }
+            .getOrNull() ?: return
+        enqueueSyncPackets(
+            packets = packets,
+            replaceCommands = setOf(
+                BleProtocol.SYNC_COMMAND_COVER_BEGIN,
+                BleProtocol.SYNC_COMMAND_COVER_DATA
+            )
+        )
     }
 
     /** Android permits only one outstanding GATT write, so packets are serialized here. */
@@ -634,7 +787,7 @@ class BleServerService : Service() {
             return
         }
 
-        val packet = syncWriteQueue.peekFirst()
+        val packet = syncWriteQueue.peekFirst() ?: return
         val started = try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeCharacteristic(
@@ -677,7 +830,13 @@ class BleServerService : Service() {
 
     private fun requestPhoneLocationAndWeather() {
         val generation = ++phoneSyncGeneration
-        if (!BleServerStatus.state.value.locationPermissionGranted) {
+        cancelActiveLocationRequest()
+        releasePhoneSyncProtection()
+        val hasFineLocation = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val hasCoarseLocation = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!hasFineLocation && !hasCoarseLocation) {
             BleServerStatus.update {
                 it.copy(lastMessage = "已同步手机时间；允许定位后可同步位置和天气")
             }
@@ -690,76 +849,236 @@ class BleServerService : Service() {
             return
         }
 
-        val providers = listOf(
-            LocationManager.NETWORK_PROVIDER,
-            LocationManager.GPS_PROVIDER,
-            LocationManager.PASSIVE_PROVIDER
-        )
-        val lastLocation = try {
-            providers.mapNotNull { provider -> manager.getLastKnownLocation(provider) }
-                .maxByOrNull { location -> location.time }
-        } catch (exception: SecurityException) {
-            BleServerStatus.update { it.copy(lastMessage = "定位权限已被撤销") }
-            return
+        val cachedProviders = buildList {
+            if (hasFineLocation) add(LocationManager.GPS_PROVIDER)
+            add(LocationManager.NETWORK_PROVIDER)
+            add(LocationManager.PASSIVE_PROVIDER)
         }
-        val now = System.currentTimeMillis()
-        if (lastLocation != null && now - lastLocation.time <= 5 * 60_000L) {
-            handlePhoneLocation(lastLocation, generation)
-            return
-        }
-
-        val provider = providers.firstOrNull { candidate ->
-            try {
-                manager.isProviderEnabled(candidate)
+        val cachedLocations = mutableListOf<Location>()
+        cachedProviders.forEach { provider ->
+            val location = try {
+                manager.getLastKnownLocation(provider)
             } catch (exception: SecurityException) {
-                false
+                Log.w(TAG, "Unable to read cached $provider location", exception)
+                null
+            } catch (exception: IllegalArgumentException) {
+                Log.w(TAG, "Location provider $provider is unavailable", exception)
+                null
+            } ?: return@forEach
+
+            logPhoneLocation("Cached", location)
+            val ageMs = locationAgeMs(location)
+            val maxAgeMs = if (isMockLocation(location)) {
+                LOCATION_MOCK_MAX_AGE_MS
+            } else {
+                LOCATION_CACHE_MAX_AGE_MS
+            }
+            if (isValidPhoneLocation(location) && ageMs != null &&
+                ageMs <= maxAgeMs) {
+                cachedLocations += location
+            } else {
+                Log.i(TAG, "Ignored stale or invalid cached location from $provider")
             }
         }
-        if (provider == null) {
-            BleServerStatus.update { it.copy(lastMessage = "已同步手机时间；请开启手机定位服务") }
+        val cachedLocation = cachedLocations.maxByOrNull { it.elapsedRealtimeNanos }
+        if (cachedLocation != null) {
+            Log.i(TAG, "Using recent ${cachedLocation.provider} cached location")
+            if (!beginPhoneSyncProtection(generation, includeLocation = false)) return
+            handlePhoneLocation(cachedLocation, generation)
             return
         }
 
-        var locationDelivered = false
-        lateinit var locationTimeout: Runnable
+        val requestedProviders = buildList {
+            if (hasFineLocation) add(LocationManager.GPS_PROVIDER)
+            add(LocationManager.NETWORK_PROVIDER)
+        }.filter { provider ->
+            runCatching { manager.isProviderEnabled(provider) }
+                .onFailure { exception ->
+                    Log.w(TAG, "Unable to query $provider provider state", exception)
+                }
+                .getOrDefault(false)
+        }
+        if (requestedProviders.isEmpty()) {
+            finishPhoneSyncProtection(generation)
+            BleServerStatus.update {
+                it.copy(lastMessage = "已同步手机时间；请开启手机定位服务")
+            }
+            return
+        }
+
+        if (!beginPhoneSyncProtection(generation, includeLocation = true)) return
+
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
-                if (locationDelivered) return
-                locationDelivered = true
-                handler.removeCallbacks(locationTimeout)
-                try {
-                    manager.removeUpdates(this)
-                } catch (exception: SecurityException) {
-                    Log.w(TAG, "Unable to remove one-shot location listener", exception)
+                if (generation != phoneSyncGeneration || activeLocationListener !== this) return
+
+                logPhoneLocation("Live", location)
+                val ageMs = locationAgeMs(location)
+                val maxAgeMs = if (isMockLocation(location)) {
+                    LOCATION_MOCK_MAX_AGE_MS
+                } else {
+                    LOCATION_LIVE_MAX_AGE_MS
                 }
+                if (!isValidPhoneLocation(location) || ageMs == null ||
+                    ageMs > maxAgeMs) {
+                    Log.w(TAG, "Ignored invalid or stale live location from ${location.provider}")
+                    return
+                }
+
+                cancelActiveLocationRequest(this)
                 handlePhoneLocation(location, generation)
             }
         }
-        locationTimeout = Runnable {
-            if (locationDelivered) return@Runnable
-            locationDelivered = true
-            try {
-                manager.removeUpdates(listener)
-            } catch (exception: SecurityException) {
-                Log.w(TAG, "Unable to remove timed-out location listener", exception)
-            }
-            if (generation != phoneSyncGeneration) {
-                Log.i(TAG, "Discarded stale location timeout generation=$generation current=$phoneSyncGeneration")
+        val locationTimeout = Runnable {
+            if (generation != phoneSyncGeneration || activeLocationListener !== listener) {
                 return@Runnable
             }
+            cancelActiveLocationRequest(listener)
+            finishPhoneSyncProtection(generation)
             BleServerStatus.update {
-                it.copy(lastMessage = "已同步手机时间；定位超时，未更新位置和天气")
+                it.copy(
+                    lastMessage = if (hasFineLocation) {
+                        "已同步手机时间；GPS 和网络定位均超时"
+                    } else {
+                        "已同步手机时间；网络定位超时，请开启精确位置"
+                    }
+                )
             }
         }
+        activeLocationListener = listener
+        activeLocationTimeout = locationTimeout
+
+        var registeredProviderCount = 0
+        requestedProviders.forEach { provider ->
+            try {
+                manager.requestLocationUpdates(
+                    provider,
+                    0L,
+                    0f,
+                    listener,
+                    Looper.getMainLooper()
+                )
+                registeredProviderCount += 1
+                Log.i(TAG, "Requested live location from $provider")
+            } catch (exception: SecurityException) {
+                Log.w(TAG, "Permission denied while requesting $provider location", exception)
+            } catch (exception: IllegalArgumentException) {
+                Log.w(TAG, "Unable to request $provider location", exception)
+            }
+        }
+        if (registeredProviderCount == 0) {
+            cancelActiveLocationRequest(listener)
+            finishPhoneSyncProtection(generation)
+            BleServerStatus.update {
+                it.copy(lastMessage = "已同步手机时间；定位权限或定位服务不可用")
+            }
+            return
+        }
+
+        handler.postDelayed(locationTimeout, LOCATION_TIMEOUT_MS)
+        BleServerStatus.update {
+            it.copy(lastMessage = "已同步手机时间，正在获取位置和天气")
+        }
+    }
+
+    private fun cancelActiveLocationRequest(expectedListener: LocationListener? = null) {
+        val listener = activeLocationListener ?: return
+        if (expectedListener != null && listener !== expectedListener) return
+
+        activeLocationTimeout?.let(handler::removeCallbacks)
+        activeLocationListener = null
+        activeLocationTimeout = null
         try {
-            @Suppress("DEPRECATION")
-            manager.requestSingleUpdate(provider, listener, Looper.getMainLooper())
-            handler.postDelayed(locationTimeout, 20_000L)
-            BleServerStatus.update { it.copy(lastMessage = "已同步手机时间，正在获取位置和天气") }
+            locationManager?.removeUpdates(listener)
         } catch (exception: SecurityException) {
-            BleServerStatus.update { it.copy(lastMessage = "定位权限已被撤销") }
+            Log.w(TAG, "Unable to remove active location listener", exception)
         } catch (exception: IllegalArgumentException) {
-            BleServerStatus.update { it.copy(lastMessage = "手机定位提供者暂不可用") }
+            Log.w(TAG, "Location listener was no longer registered", exception)
+        }
+    }
+
+    private fun locationAgeMs(location: Location): Long? {
+        val fixElapsedNanos = location.elapsedRealtimeNanos
+        if (fixElapsedNanos <= 0L) return null
+        val ageNanos = SystemClock.elapsedRealtimeNanos() - fixElapsedNanos
+        if (ageNanos < 0L) return null
+        return ageNanos / 1_000_000L
+    }
+
+    private fun isValidPhoneLocation(location: Location): Boolean =
+        location.latitude.isFinite() && location.longitude.isFinite() &&
+            location.latitude in -90.0..90.0 && location.longitude in -180.0..180.0
+
+    @Suppress("DEPRECATION")
+    private fun isMockLocation(location: Location): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) location.isMock
+        else location.isFromMockProvider
+
+    private fun logPhoneLocation(prefix: String, location: Location) {
+        val age = locationAgeMs(location)?.toString() ?: "unknown"
+        val accuracy = if (location.hasAccuracy()) "%.1f".format(Locale.US, location.accuracy) else "unknown"
+        Log.i(
+            TAG,
+            "$prefix location provider=${location.provider} ageMs=$age accuracyM=$accuracy " +
+                "mock=${isMockLocation(location)} lat=${"%.6f".format(Locale.US, location.latitude)} " +
+                "lon=${"%.6f".format(Locale.US, location.longitude)}"
+        )
+    }
+
+    private fun beginPhoneSyncProtection(generation: Long, includeLocation: Boolean): Boolean {
+        try {
+            startForegroundWithTypes(includeLocation)
+        } catch (exception: RuntimeException) {
+            Log.w(TAG, "Unable to enable phone-data sync foreground-service types", exception)
+            BleServerStatus.update {
+                it.copy(
+                    lastMessage = if (includeLocation) {
+                        "已同步手机时间；请保持 App 在前台并允许定位"
+                    } else {
+                        "已同步手机时间；手机数据同步服务暂不可用"
+                    }
+                )
+            }
+            return false
+        }
+
+        phoneSyncProtectionGeneration = generation
+        phoneSyncWakeLock = try {
+            powerManager?.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "$packageName:phone-data-sync"
+            )?.apply {
+                setReferenceCounted(false)
+                acquire(PHONE_SYNC_WAKE_LOCK_MS)
+            }
+        } catch (exception: RuntimeException) {
+            Log.w(TAG, "Unable to acquire phone-data sync wake lock", exception)
+            null
+        }
+        return true
+    }
+
+    private fun finishPhoneSyncProtection(generation: Long) {
+        if (phoneSyncProtectionGeneration != generation) return
+        releasePhoneSyncProtection()
+    }
+
+    private fun releasePhoneSyncProtection() {
+        phoneSyncProtectionGeneration = null
+        val wakeLock = phoneSyncWakeLock
+        phoneSyncWakeLock = null
+        try {
+            if (wakeLock?.isHeld == true) wakeLock.release()
+        } catch (exception: RuntimeException) {
+            Log.w(TAG, "Unable to release phone-data sync wake lock", exception)
+        }
+
+        if (BleServerStatus.state.value.serviceRunning) {
+            try {
+                startForegroundWithTypes(includeLocation = false)
+            } catch (exception: RuntimeException) {
+                Log.w(TAG, "Unable to restore connected-device foreground-service type", exception)
+            }
         }
     }
 
@@ -770,6 +1089,7 @@ class BleServerService : Service() {
         }
         if (location.latitude !in -90.0..90.0 || location.longitude !in -180.0..180.0) {
             BleServerStatus.update { it.copy(lastMessage = "手机定位数据无效") }
+            finishPhoneSyncProtection(generation)
             return
         }
 
@@ -778,11 +1098,14 @@ class BleServerService : Service() {
                 Log.i(TAG, "Discarded stale location sync generation=$generation current=$phoneSyncGeneration")
                 return@post
             }
+            val accuracyMeters = location.accuracy.takeIf {
+                location.hasAccuracy() && it.isFinite() && it >= 0f
+            } ?: 0f
             enqueueSyncPacket(
                 BleProtocol.buildLocationSyncPacket(
                     location.latitude,
                     location.longitude,
-                    location.accuracy
+                    accuracyMeters
                 )
             )
             BleServerStatus.update { it.copy(lastMessage = "已同步手机时间和位置，正在获取天气") }
@@ -839,17 +1162,15 @@ class BleServerService : Service() {
         val cityPacket = sequenceOf(
             address?.locality,
             address?.subAdminArea,
-            address?.adminArea,
-            address?.countryName
+            address?.subLocality,
+            address?.adminArea
         )
             .mapNotNull { candidate ->
-                candidate?.let { name ->
-                    runCatching { BleProtocol.buildCitySyncPacket(name) }.getOrNull()
-                }
+                candidate?.let(::buildDisplayCityPacket)
             }
             .firstOrNull()
         if (cityPacket == null) {
-            Log.w(TAG, "Reverse geocoding returned no display-safe English place name")
+            Log.w(TAG, "Reverse geocoding returned no display-safe city name")
             return
         }
 
@@ -864,10 +1185,44 @@ class BleServerService : Service() {
         }
     }
 
+    private fun buildDisplayCityPacket(city: String): ByteArray? {
+        runCatching { BleProtocol.buildCitySyncPacket(city) }.getOrNull()?.let { return it }
+
+        val romanizedCity = cityTransliterator?.transliterate(city)
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+        return runCatching { BleProtocol.buildCitySyncPacket(romanizedCity) }
+            .onFailure { exception -> Log.w(TAG, "Unable to encode romanized city '$romanizedCity'", exception) }
+            .getOrNull()
+    }
+
     private fun fetchWeatherForLocation(location: Location, generation: Long) {
-        Thread {
-            try {
-                val weather = requestOpenMeteoWeather(location.latitude, location.longitude)
+        Thread(Runnable {
+            var weather: PhoneWeatherSnapshot? = null
+            var lastFailure: Exception? = null
+            for (attempt in 1..WEATHER_MAX_ATTEMPTS) {
+                if (generation != phoneSyncGeneration) return@Runnable
+                try {
+                    weather = requestOpenMeteoWeather(location.latitude, location.longitude)
+                    break
+                } catch (exception: Exception) {
+                    lastFailure = exception
+                    Log.w(TAG, "Open-Meteo attempt $attempt/$WEATHER_MAX_ATTEMPTS failed", exception)
+                    if (attempt == WEATHER_MAX_ATTEMPTS || !shouldRetryWeather(exception)) break
+                    try {
+                        Thread.sleep(WEATHER_RETRY_DELAY_MS)
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        lastFailure = interrupted
+                        break
+                    }
+                }
+            }
+
+            val completedWeather = weather
+            if (completedWeather != null) {
                 handler.post {
                     if (generation != phoneSyncGeneration) {
                         Log.i(TAG, "Discarded stale weather sync generation=$generation current=$phoneSyncGeneration")
@@ -875,28 +1230,30 @@ class BleServerService : Service() {
                     }
                     enqueueSyncPacket(
                         BleProtocol.buildWeatherSyncPacket(
-                            weather.wmoCode,
-                            weather.currentCelsius,
-                            weather.highCelsius,
-                            weather.lowCelsius,
-                            weather.humidityPercent
+                            completedWeather.wmoCode,
+                            completedWeather.currentCelsius,
+                            completedWeather.highCelsius,
+                            completedWeather.lowCelsius,
+                            completedWeather.humidityPercent
                         )
                     )
                     BleServerStatus.update { it.copy(lastMessage = "已同步手机时间、位置和天气") }
+                    finishPhoneSyncProtection(generation)
                 }
-            } catch (exception: Exception) {
-                Log.w(TAG, "Unable to request Open-Meteo weather", exception)
+            } else {
+                val failure = lastFailure ?: IllegalStateException("Weather request ended without a result")
                 handler.post {
                     if (generation != phoneSyncGeneration) {
                         Log.i(TAG, "Discarded stale weather failure generation=$generation current=$phoneSyncGeneration")
                         return@post
                     }
                     BleServerStatus.update {
-                        it.copy(lastMessage = "已同步手机时间和位置，天气获取失败")
+                        it.copy(lastMessage = weatherFailureMessage(failure))
                     }
+                    finishPhoneSyncProtection(generation)
                 }
             }
-        }.start()
+        }).start()
     }
 
     private fun requestOpenMeteoWeather(latitude: Double, longitude: Double): PhoneWeatherSnapshot {
@@ -915,7 +1272,7 @@ class BleServerService : Service() {
         connection.setRequestProperty("Accept", "application/json")
         try {
             if (connection.responseCode !in 200..299) {
-                throw IllegalStateException("Open-Meteo HTTP ${connection.responseCode}")
+                throw WeatherHttpException(connection.responseCode)
             }
             val json = connection.inputStream.bufferedReader().use { reader -> JSONObject(reader.readText()) }
             val current = json.getJSONObject("current")
@@ -932,6 +1289,20 @@ class BleServerService : Service() {
         }
     }
 
+    private fun shouldRetryWeather(exception: Exception): Boolean = when (exception) {
+        is WeatherHttpException -> exception.statusCode == 408 || exception.statusCode == 429 ||
+            exception.statusCode >= 500
+        is IOException -> true
+        else -> false
+    }
+
+    private fun weatherFailureMessage(exception: Exception): String = when (exception) {
+        is SocketTimeoutException -> "已同步手机时间和位置；天气网络请求超时"
+        is UnknownHostException -> "已同步手机时间和位置；请检查手机网络"
+        is WeatherHttpException -> "已同步手机时间和位置；天气服务错误 ${exception.statusCode}"
+        else -> "已同步手机时间和位置；天气数据获取失败"
+    }
+
     private data class PhoneWeatherSnapshot(
         val wmoCode: Int,
         val currentCelsius: Double,
@@ -939,6 +1310,9 @@ class BleServerService : Service() {
         val lowCelsius: Double,
         val humidityPercent: Int
     )
+
+    private class WeatherHttpException(val statusCode: Int) :
+        Exception("Open-Meteo HTTP $statusCode")
 
     private fun sendFindWatchCommand() {
         if (!BleServerStatus.state.value.commandChannelReady) {
@@ -1062,6 +1436,9 @@ class BleServerService : Service() {
         handler.removeCallbacks(connectionTimeout)
         val gatt = expectedGatt ?: bluetoothGatt
         if (expectedGatt == null || expectedGatt === bluetoothGatt) {
+            phoneSyncGeneration += 1
+            cancelActiveLocationRequest()
+            releasePhoneSyncProtection()
             bluetoothGatt = null
             controlCharacteristic = null
             stateCharacteristic = null
@@ -1100,8 +1477,10 @@ class BleServerService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "BLE client service stopped")
+        mediaLyricsMonitor.stop()
         stopRinging("服务已停止")
         stopBleResources()
+        WatchNotificationRepository.removeListener(notificationDeliveryListener)
         unregisterReceiver(bluetoothStateReceiver)
         BleServerStatus.update {
             it.copy(serviceRunning = false, scanning = false, scanRequestPending = false,

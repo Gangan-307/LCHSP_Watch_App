@@ -1,8 +1,10 @@
 package com.watch.hsp
 
 import java.text.Normalizer
+import java.util.Calendar
 import java.util.UUID
 import java.util.TimeZone
+import java.util.zip.CRC32
 import kotlin.math.roundToInt
 
 /** UUIDs and packets shared by the watch GATT server and the phone client. */
@@ -27,6 +29,8 @@ object BleProtocol {
     /** STATE notifications: ask the Android phone to start or stop ringing. */
     const val PHONE_COMMAND_FIND_START: Byte = 0x01
     const val PHONE_COMMAND_FIND_STOP: Byte = 0x02
+    const val PHONE_COMMAND_NOTIFICATION_CLEAR: Byte = 0x03
+    const val PHONE_COMMAND_NOTIFICATION_DELETE: Byte = 0x04
 
     /** CONTROL writes: ask the watch to start or stop vibrating. */
     const val WATCH_COMMAND_FIND_START: Byte = 0x11
@@ -36,8 +40,32 @@ object BleProtocol {
     const val SYNC_COMMAND_LOCATION: Byte = 0x22
     const val SYNC_COMMAND_WEATHER: Byte = 0x23
     const val SYNC_COMMAND_CITY: Byte = 0x24
+    const val SYNC_COMMAND_NOTIFICATION_BEGIN: Byte = 0x31
+    const val SYNC_COMMAND_NOTIFICATION_DATA: Byte = 0x32
+    const val SYNC_COMMAND_LYRIC_BEGIN: Byte = 0x41
+    const val SYNC_COMMAND_LYRIC_DATA: Byte = 0x42
+    const val SYNC_COMMAND_COVER_BEGIN: Byte = 0x43
+    const val SYNC_COMMAND_COVER_DATA: Byte = 0x44
+
+    const val NOTIFICATION_APP_SMS = 1
+    const val NOTIFICATION_APP_WECHAT = 2
+    const val NOTIFICATION_APP_QQ = 3
 
     private const val MAX_SYNC_PACKET_BYTES = 20
+    private const val NOTIFICATION_BEGIN_LENGTH = 10
+    private const val NOTIFICATION_DATA_HEADER_LENGTH = 5
+    private const val NOTIFICATION_TITLE_MAX_BYTES = 96
+    private const val NOTIFICATION_BODY_MAX_BYTES = 512
+    private const val NOTIFICATION_DATA_MAX_BYTES =
+        MAX_SYNC_PACKET_BYTES - NOTIFICATION_DATA_HEADER_LENGTH
+    private const val LYRIC_BEGIN_LENGTH = 5
+    private const val LYRIC_DATA_HEADER_LENGTH = 5
+    private const val LYRIC_MAX_BYTES = 192
+    private const val LYRIC_DATA_MAX_BYTES = MAX_SYNC_PACKET_BYTES - LYRIC_DATA_HEADER_LENGTH
+    private const val COVER_BEGIN_LENGTH = 11
+    private const val COVER_DATA_HEADER_LENGTH = 7
+    const val COVER_MAX_BYTES = 16 * 1024
+    private const val COVER_DATA_MAX_BYTES = MAX_SYNC_PACKET_BYTES - COVER_DATA_HEADER_LENGTH
 
     fun packet(command: Byte, sequence: Byte): ByteArray = byteArrayOf(command, sequence)
 
@@ -115,6 +143,104 @@ object BleProtocol {
     }
 
     /**
+     * Build a compact, ordered notification transfer. The watch supports only
+     * 20-byte writes before MTU negotiation, so UTF-8 content is segmented.
+     */
+    fun buildNotificationSyncPackets(
+        id: Int,
+        app: Int,
+        title: String,
+        body: String,
+        postedAtMillis: Long
+    ): List<ByteArray> {
+        require(id in 1..0xffff)
+        require(app in NOTIFICATION_APP_SMS..NOTIFICATION_APP_QQ)
+
+        val titleBytes = truncateUtf8(title, NOTIFICATION_TITLE_MAX_BYTES)
+        val bodyBytes = truncateUtf8(body, NOTIFICATION_BODY_MAX_BYTES)
+        val payload = titleBytes + bodyBytes
+        val packets = ArrayList<ByteArray>()
+        val begin = ByteArray(NOTIFICATION_BEGIN_LENGTH)
+        begin[0] = SYNC_COMMAND_NOTIFICATION_BEGIN
+        begin[1] = app.toByte()
+        writeUInt16Le(begin, 2, id)
+        writeUInt16Le(begin, 4, titleBytes.size)
+        writeUInt16Le(begin, 6, bodyBytes.size)
+        val postedAt = Calendar.getInstance().apply {
+            timeInMillis = postedAtMillis.takeIf { it > 0L } ?: System.currentTimeMillis()
+        }
+        begin[8] = postedAt.get(Calendar.HOUR_OF_DAY).toByte()
+        begin[9] = postedAt.get(Calendar.MINUTE).toByte()
+        packets += begin
+
+        var offset = 0
+        while (offset < payload.size) {
+            val length = minOf(NOTIFICATION_DATA_MAX_BYTES, payload.size - offset)
+            val data = ByteArray(NOTIFICATION_DATA_HEADER_LENGTH + length)
+            data[0] = SYNC_COMMAND_NOTIFICATION_DATA
+            writeUInt16Le(data, 1, id)
+            writeUInt16Le(data, 3, offset)
+            payload.copyInto(data, NOTIFICATION_DATA_HEADER_LENGTH, offset, offset + length)
+            packets += data
+            offset += length
+        }
+        return packets
+    }
+
+    /** Send only the current lyric line; the watch does not retain the whole song. */
+    fun buildLyricSyncPackets(generation: Int, lyric: String): List<ByteArray> {
+        require(generation in 1..0xffff)
+        val payload = truncateUtf8(lyric, LYRIC_MAX_BYTES)
+        val packets = ArrayList<ByteArray>()
+        val begin = ByteArray(LYRIC_BEGIN_LENGTH)
+        begin[0] = SYNC_COMMAND_LYRIC_BEGIN
+        writeUInt16Le(begin, 1, generation)
+        writeUInt16Le(begin, 3, payload.size)
+        packets += begin
+
+        var offset = 0
+        while (offset < payload.size) {
+            val length = minOf(LYRIC_DATA_MAX_BYTES, payload.size - offset)
+            val data = ByteArray(LYRIC_DATA_HEADER_LENGTH + length)
+            data[0] = SYNC_COMMAND_LYRIC_DATA
+            writeUInt16Le(data, 1, generation)
+            writeUInt16Le(data, 3, offset)
+            payload.copyInto(data, LYRIC_DATA_HEADER_LENGTH, offset, offset + length)
+            packets += data
+            offset += length
+        }
+        return packets
+    }
+
+    /** Transfer a small JPEG cover with an end-to-end CRC32 integrity check. */
+    fun buildCoverSyncPackets(generation: Int, jpeg: ByteArray): List<ByteArray> {
+        require(generation in 1..0xffff)
+        require(jpeg.isNotEmpty() && jpeg.size <= COVER_MAX_BYTES)
+        require(jpeg.size >= 4 && jpeg[0] == 0xff.toByte() && jpeg[1] == 0xd8.toByte())
+
+        val packets = ArrayList<ByteArray>()
+        val begin = ByteArray(COVER_BEGIN_LENGTH)
+        begin[0] = SYNC_COMMAND_COVER_BEGIN
+        writeUInt16Le(begin, 1, generation)
+        writeUInt32Le(begin, 3, jpeg.size.toLong())
+        writeUInt32Le(begin, 7, CRC32().apply { update(jpeg) }.value)
+        packets += begin
+
+        var offset = 0
+        while (offset < jpeg.size) {
+            val length = minOf(COVER_DATA_MAX_BYTES, jpeg.size - offset)
+            val data = ByteArray(COVER_DATA_HEADER_LENGTH + length)
+            data[0] = SYNC_COMMAND_COVER_DATA
+            writeUInt16Le(data, 1, generation)
+            writeUInt32Le(data, 3, offset.toLong())
+            jpeg.copyInto(data, COVER_DATA_HEADER_LENGTH, offset, offset + length)
+            packets += data
+            offset += length
+        }
+        return packets
+    }
+
+    /**
      * Device status packet: schema, flags, battery, firmware version length, version bytes,
      * followed by optional activity data: steps u32 LE, kcal u16 LE, distance meters u32 LE.
      */
@@ -171,6 +297,16 @@ object BleProtocol {
 
     private fun celsiusToDeci(celsius: Double): Int =
         (celsius * 10.0).roundToInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+
+    /** Do not split a UTF-8 sequence when reducing a notification for BLE. */
+    private fun truncateUtf8(value: String, maxBytes: Int): ByteArray {
+        val bytes = value.replace(Regex("\\s+"), " ").trim().toByteArray(Charsets.UTF_8)
+        if (bytes.size <= maxBytes) return bytes
+
+        var length = maxBytes
+        while (length > 0 && (bytes[length].toInt() and 0xc0) == 0x80) length--
+        return bytes.copyOf(length)
+    }
 
     private fun writeUInt16Le(packet: ByteArray, offset: Int, value: Int) {
         packet[offset] = (value and 0xff).toByte()

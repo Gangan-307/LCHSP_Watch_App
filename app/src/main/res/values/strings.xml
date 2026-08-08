@@ -4,4 +4,5 @@
     <string name="notification_title">HSP Watch 已就绪</string>
     <string name="notification_text">正在连接 HSP Watch 查找服务</string>
     <string name="notification_stop_ringing">停止响铃</string>
+    <string name="notification_listener_label">HSP Watch 消息同步</string>
 </resources>
