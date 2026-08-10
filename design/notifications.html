@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f8f7">
+  <title>HSP Watch · 通知</title>
+  <link rel="icon" href="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script defer src="assets/app.js"></script>
+</head>
+<body data-page="notifications">
+  <div class="app-layout">
+    <div data-side-nav></div>
+
+    <div class="app-stage">
+      <header class="topbar">
+        <a class="mobile-brand" href="index.html">
+          <img src="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png" alt="">
+          <span>HSP Watch</span>
+        </a>
+        <div class="topbar-state">
+          <span class="status-dot" data-connection-dot></span>
+          <span data-connected-copy>手表已连接</span>
+        </div>
+        <time class="topbar-time" data-current-time>09:41</time>
+      </header>
+
+      <main class="page">
+        <div class="page-head">
+          <div>
+            <h1>消息通知</h1>
+            <p>短信、微信和 QQ/TIM 的新消息将进入手表消息页。</p>
+          </div>
+        </div>
+
+        <div class="status-banner info">
+          <span class="banner-icon"><span class="icon" data-icon="shield-check"></span></span>
+          <div>
+            <strong>通知读取已开启</strong>
+            <span>消息缓存与数据同步通道工作正常</span>
+          </div>
+          <span class="banner-tail">最多 5 条</span>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="section">
+              <div class="section-head">
+                <h2>最近缓存</h2>
+                <span class="badge blue">5 条</span>
+              </div>
+              <div class="notification-list">
+                <article class="notification-item surface">
+                  <span class="notification-app source-mark wechat">微</span>
+                  <div class="notification-copy">
+                    <div class="notification-title"><strong>产品讨论群</strong><span>09:36</span></div>
+                    <p>新的固件版本已经可以开始联调，状态同步字段也更新了。</p>
+                  </div>
+                  <span class="badge blue notification-state">已缓存</span>
+                </article>
+                <article class="notification-item surface">
+                  <span class="notification-app source-mark sms">短</span>
+                  <div class="notification-copy">
+                    <div class="notification-title"><strong>验证码</strong><span>09:18</span></div>
+                    <p>您的登录验证码为 4826，请勿转发。</p>
+                  </div>
+                  <span class="badge blue notification-state">已缓存</span>
+                </article>
+                <article class="notification-item surface">
+                  <span class="notification-app source-mark qq">Q</span>
+                  <div class="notification-copy">
+                    <div class="notification-title"><strong>设备联调</strong><span>08:54</span></div>
+                    <p>日志已经上传，麻烦确认一下断线重连结果。</p>
+                  </div>
+                  <span class="badge blue notification-state">已缓存</span>
+                </article>
+                <article class="notification-item surface">
+                  <span class="notification-app source-mark wechat">微</span>
+                  <div class="notification-copy">
+                    <div class="notification-title"><strong>项目群</strong><span>08:42</span></div>
+                    <p>今天下午三点同步 UI 与协议进度。</p>
+                  </div>
+                  <span class="badge warning notification-state">等待同步</span>
+                </article>
+                <article class="notification-item surface">
+                  <span class="notification-app source-mark sms">短</span>
+                  <div class="notification-copy">
+                    <div class="notification-title"><strong>快递提醒</strong><span>08:10</span></div>
+                    <p>您的包裹已到达服务点，请及时领取。</p>
+                  </div>
+                  <span class="badge blue notification-state">已缓存</span>
+                </article>
+              </div>
+            </section>
+          </div>
+
+          <div class="stack">
+            <section class="section">
+              <div class="section-head"><h2>通知使用权</h2></div>
+              <div class="compact-panel surface">
+                <div class="list-row">
+                  <span class="row-icon green"><span class="icon" data-icon="lock-keyhole"></span></span>
+                  <span class="row-main"><span class="row-title">系统通知读取</span><span class="row-subtitle">HSP Watch Listener</span></span>
+                  <span class="badge success" data-notification-badge data-notification-access>已开启</span>
+                </div>
+                <button class="btn btn-secondary btn-block mt-14" type="button" data-action="manage-notifications">
+                  <span class="icon" data-icon="settings-2"></span>
+                  <span data-notification-action-label>管理通知读取</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-head"><h2>支持来源</h2></div>
+              <div class="source-row" aria-label="支持的通知来源">
+                <span class="source-chip"><span class="source-mark sms">短</span>短信</span>
+                <span class="source-chip"><span class="source-mark wechat">微</span>微信</span>
+                <span class="source-chip"><span class="source-mark qq">Q</span>QQ / TIM</span>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-head"><h2>传输状态</h2></div>
+              <div class="list">
+                <div class="list-row">
+                  <span class="row-icon green"><span class="icon" data-icon="link"></span></span>
+                  <span class="row-main"><span class="row-title">数据同步通道</span></span>
+                  <span class="row-value success" data-sync-channel>已就绪</span>
+                </div>
+                <div class="list-row">
+                  <span class="row-icon"><span class="icon" data-icon="database"></span></span>
+                  <span class="row-main"><span class="row-title">手机端缓存</span><span class="row-subtitle">重连后自动补发</span></span>
+                  <span class="row-value">5 / 5</span>
+                </div>
+                <div class="list-row">
+                  <span class="row-icon"><span class="icon" data-icon="watch"></span></span>
+                  <span class="row-main"><span class="row-title">手表端管理</span><span class="row-subtitle">删除或清空后同步更新缓存</span></span>
+                  <span class="row-value success">可用</span>
+                </div>
+              </div>
+            </section>
+
+            <div class="status-banner warning flush-banner">
+              <span class="banner-icon"><span class="icon" data-icon="info"></span></span>
+              <div>
+                <strong>传输状态说明</strong>
+                <span>“已缓存”不代表手表已确认送达</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <div data-bottom-nav></div>
+    </div>
+  </div>
+
+  <div class="toast" role="status" aria-live="polite" data-toast></div>
+</body>
+</html>

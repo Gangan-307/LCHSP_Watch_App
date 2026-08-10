@@ -64,7 +64,7 @@ object BleProtocol {
     private const val LYRIC_DATA_MAX_BYTES = MAX_SYNC_PACKET_BYTES - LYRIC_DATA_HEADER_LENGTH
     private const val COVER_BEGIN_LENGTH = 11
     private const val COVER_DATA_HEADER_LENGTH = 7
-    const val COVER_MAX_BYTES = 16 * 1024
+    const val COVER_MAX_BYTES = 8 * 1024
     private const val COVER_DATA_MAX_BYTES = MAX_SYNC_PACKET_BYTES - COVER_DATA_HEADER_LENGTH
 
     fun packet(command: Byte, sequence: Byte): ByteArray = byteArrayOf(command, sequence)

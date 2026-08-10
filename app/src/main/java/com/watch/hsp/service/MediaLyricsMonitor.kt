@@ -56,8 +56,11 @@ class MediaLyricsMonitor(
     private val appContext = context.applicationContext
     private val mediaSessionManager = appContext.getSystemService(MediaSessionManager::class.java)
     private val listenerComponent = ComponentName(appContext, WatchNotificationListenerService::class.java)
-    private val worker = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "hsp-media-sync").apply { isDaemon = true }
+    private val coverWorker = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "hsp-cover-sync").apply { isDaemon = true }
+    }
+    private val lyricsWorker = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "hsp-lyrics-sync").apply { isDaemon = true }
     }
     private var running = false
     private var generation = 0
@@ -65,10 +68,13 @@ class MediaLyricsMonitor(
     private var currentController: MediaController? = null
     private var currentLines: List<TimedLyricLine> = emptyList()
     private var cachedCover: ByteArray? = null
+    private var coverLoadInFlight = false
+    private var nextCoverRetryAtMs = 0L
     private var currentLyricText = ""
     private var lastSentLyric: String? = null
     private var nextPollDelayMs = IDLE_POLL_INTERVAL_MS
     private var mediaAccessWarningLogged = false
+    private var noMediaSessionLogged = false
 
     private val pollTask = object : Runnable {
         override fun run() {
@@ -88,7 +94,8 @@ class MediaLyricsMonitor(
         running = false
         handler.removeCallbacks(pollTask)
         generation = nextGeneration(generation)
-        worker.shutdownNow()
+        coverWorker.shutdownNow()
+        lyricsWorker.shutdownNow()
     }
 
     /** Re-send cached media state after a new BLE connection becomes writable. */
@@ -122,9 +129,14 @@ class MediaLyricsMonitor(
             ?: ""
         if (controller == null || metadata == null || title.isBlank()) {
             nextPollDelayMs = IDLE_POLL_INTERVAL_MS
+            if (!noMediaSessionLogged) {
+                noMediaSessionLogged = true
+                Log.w(TAG, "No active media session with usable metadata")
+            }
             if (currentTrackKey != null) clearTrack("")
             return
         }
+        noMediaSessionLogged = false
         nextPollDelayMs = when (controller.playbackState?.state) {
             PlaybackState.STATE_PLAYING -> PLAYING_POLL_INTERVAL_MS
             PlaybackState.STATE_BUFFERING, PlaybackState.STATE_CONNECTING ->
@@ -140,15 +152,20 @@ class MediaLyricsMonitor(
         val album = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty()
         val duration = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0L)
         val mediaId = metadata.description?.mediaId.orEmpty()
+        val trackNumber = metadata.getLong(MediaMetadata.METADATA_KEY_TRACK_NUMBER)
+        val artwork = readArtwork(metadata)
+        val artworkUri = readArtworkUri(metadata)
+        val artIdentity = artworkIdentity(artwork, artworkUri)
         // Some players publish the current lyric as TITLE. Prefer stable media
         // fields so every lyric line is not mistaken for a new track.
         val stableIdentity = when {
-            mediaId.isNotBlank() -> listOf("id", mediaId)
+            mediaId.isNotBlank() -> listOf("id", mediaId, artist, album, duration.toString())
             artist.isNotBlank() || album.isNotBlank() || duration > 0L ->
-                listOf("metadata", artist, album, duration.toString())
+                listOf("metadata", artist, album, duration.toString(), trackNumber.toString())
             else -> listOf("title", title)
         }
-        val key = (listOf(controller.packageName) + stableIdentity).joinToString("\u001f")
+        val key = (listOf(controller.packageName) + stableIdentity +
+            listOf("art", artIdentity)).joinToString("\u001f")
 
         currentController = controller
         if (key != currentTrackKey) {
@@ -158,11 +175,24 @@ class MediaLyricsMonitor(
                 artist = artist,
                 album = album,
                 durationMs = duration,
-                artwork = readArtwork(metadata),
-                artworkUri = readArtworkUri(metadata)
+                artwork = artwork,
+                artworkUri = artworkUri
             )
             beginTrack(track)
         } else {
+            if (cachedCover == null && !coverLoadInFlight &&
+                SystemClock.elapsedRealtime() >= nextCoverRetryAtMs) {
+                val refreshedTrack = Track(
+                    key = key,
+                    title = title,
+                    artist = artist,
+                    album = album,
+                    durationMs = duration,
+                    artwork = artwork,
+                    artworkUri = artworkUri
+                )
+                maybeLoadCover(refreshedTrack)
+            }
             emitCurrentLyric()
         }
     }
@@ -173,22 +203,14 @@ class MediaLyricsMonitor(
         currentTrackKey = track.key
         currentLines = emptyList()
         cachedCover = null
+        coverLoadInFlight = false
+        nextCoverRetryAtMs = 0L
         lastSentLyric = null
         emitLyric("")
+        Log.i(TAG, "Media track changed: ${track.title} (${track.key.hashCode()})")
+        startCoverLoad(track, trackGeneration)
 
-        worker.execute {
-            val cover = runCatching { buildCoverJpeg(track.artwork, track.artworkUri) }
-                .onFailure { Log.w(TAG, "Unable to prepare media cover", it) }
-                .getOrNull()
-            if (cover != null) {
-                handler.postDelayed({
-                    if (running && generation == trackGeneration) {
-                        cachedCover = cover
-                        listener.onCoverAvailable(trackGeneration, cover)
-                    }
-                }, COVER_SETTLE_DELAY_MS)
-            }
-
+        lyricsWorker.execute {
             val response = runCatching { fetchLyrics(track) }
                 .onFailure { Log.w(TAG, "Unable to obtain lyrics for ${track.title}", it) }
                 .getOrNull()
@@ -202,12 +224,48 @@ class MediaLyricsMonitor(
         }
     }
 
+    private fun maybeLoadCover(track: Track) {
+        if (cachedCover != null || coverLoadInFlight ||
+            SystemClock.elapsedRealtime() < nextCoverRetryAtMs) {
+            return
+        }
+        startCoverLoad(track, generation)
+    }
+
+    private fun startCoverLoad(track: Track, trackGeneration: Int) {
+        if (coverLoadInFlight) return
+
+        coverLoadInFlight = true
+        coverWorker.execute {
+            val cover = runCatching { buildCoverJpeg(track.artwork, track.artworkUri) }
+                .onFailure { Log.w(TAG, "Unable to prepare media cover", it) }
+                .getOrNull()
+            handler.post {
+                if (!running || generation != trackGeneration) return@post
+                if (cover == null) {
+                    coverLoadInFlight = false
+                    nextCoverRetryAtMs = SystemClock.elapsedRealtime() + COVER_RETRY_DELAY_MS
+                    Log.w(TAG, "No usable cover for ${track.title}; retrying later")
+                    return@post
+                }
+
+                cachedCover = cover
+                coverLoadInFlight = false
+                nextCoverRetryAtMs = 0L
+                Log.i(TAG, "Phone cover ready: ${cover.size} bytes")
+                listener.onCoverAvailable(trackGeneration, cover)
+            }
+        }
+    }
+
     private fun clearTrack(message: String) {
         generation = nextGeneration(generation)
         currentTrackKey = null
         currentController = null
         currentLines = emptyList()
         cachedCover = null
+        coverLoadInFlight = false
+        nextCoverRetryAtMs = 0L
         lastSentLyric = null
         emitLyric(message)
     }
@@ -257,6 +315,28 @@ class MediaLyricsMonitor(
             ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
             ?: metadata.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
             ?: metadata.description?.iconUri?.toString()
+
+    private fun artworkIdentity(bitmap: Bitmap?, artworkUri: String?): String {
+        val bitmapIdentity = if (bitmap == null || bitmap.isRecycled ||
+            bitmap.width <= 0 || bitmap.height <= 0) {
+            ""
+        } else {
+            runCatching {
+                var hash = 17
+                for (y in 0..2) {
+                    val sampleY = (bitmap.height - 1) * y / 2
+                    for (x in 0..2) {
+                        val sampleX = (bitmap.width - 1) * x / 2
+                        hash = 31 * hash + bitmap.getPixel(sampleX, sampleY)
+                    }
+                }
+                "${bitmap.width}x${bitmap.height}:${Integer.toHexString(hash)}"
+            }.getOrElse {
+                "${bitmap.width}x${bitmap.height}:g${bitmap.generationId}"
+            }
+        }
+        return "${artworkUri.orEmpty()}|$bitmapIdentity"
+    }
 
     private fun buildCoverJpeg(bitmap: Bitmap?, artworkUri: String?): ByteArray? {
         val decoded = if (bitmap == null) decodeArtworkUri(artworkUri) else null
@@ -374,8 +454,9 @@ class MediaLyricsMonitor(
         const val PAUSED_POLL_INTERVAL_MS = 1_500L
         const val IDLE_POLL_INTERVAL_MS = 2_500L
         const val ACCESS_RETRY_INTERVAL_MS = 10_000L
-        const val COVER_SETTLE_DELAY_MS = 800L
+        const val COVER_RETRY_DELAY_MS = 3_000L
         const val HTTP_TIMEOUT_MS = 8_000
+        /* Match the watch widget exactly; LVGL's streamed JPG path cannot zoom reliably. */
         const val COVER_EDGE_PX = 128
         const val LRCLIB_BASE = "https://lrclib.net"
     }

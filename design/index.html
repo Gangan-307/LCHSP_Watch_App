@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f8f7">
+  <title>HSP Watch · 首页</title>
+  <link rel="icon" href="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script defer src="assets/app.js"></script>
+</head>
+<body data-page="home">
+  <div class="app-layout">
+    <div data-side-nav></div>
+
+    <div class="app-stage">
+      <header class="topbar">
+        <a class="mobile-brand" href="index.html">
+          <img src="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png" alt="">
+          <span>HSP Watch</span>
+        </a>
+        <div class="topbar-state">
+          <span class="status-dot" data-connection-dot></span>
+          <span data-connected-copy>手表已连接</span>
+        </div>
+        <time class="topbar-time" data-current-time>09:41</time>
+      </header>
+
+      <main class="page">
+        <div class="page-head">
+          <div>
+            <h1>设备总览</h1>
+            <p>手表连接稳定，今日数据已更新。</p>
+          </div>
+          <span class="badge success desktop-only"><span class="icon icon-sm" data-icon="shield-check"></span>链路正常</span>
+        </div>
+
+        <div class="status-banner">
+          <span class="banner-icon"><span class="icon" data-icon="check"></span></span>
+          <div>
+            <strong>连接与同步均已就绪</strong>
+            <span>缓存地址直连成功，三个数据通道工作正常</span>
+          </div>
+          <span class="banner-tail" data-sync-age>刚刚</span>
+        </div>
+
+        <div class="home-grid">
+          <div class="stack">
+            <article class="device-hero surface">
+              <div class="device-visual">
+                <img src="../docs/icon.png" alt="HSP Watch 蓝牙手表标志">
+              </div>
+              <div class="device-content">
+                <span class="eyebrow">已连接设备</span>
+                <div class="device-title-row">
+                  <div>
+                    <h2>HSP Watch</h2>
+                    <p class="device-subtitle">未充电 · 固件 0.1.0</p>
+                  </div>
+                  <span class="battery-readout"><span class="icon icon-sm" data-icon="battery-charging"></span>82%</span>
+                </div>
+                <div class="device-meta">
+                  <span><span class="icon icon-sm" data-icon="bluetooth"></span>低功耗蓝牙</span>
+                  <span><span class="icon icon-sm" data-icon="refresh-cw"></span>状态已同步</span>
+                </div>
+                <div class="device-actions">
+                  <button class="btn btn-primary" type="button" data-action="find-watch">
+                    <span class="icon" data-icon="locate-fixed"></span>
+                    <span data-find-label>查找手表</span>
+                  </button>
+                  <button class="btn btn-secondary" type="button" data-action="sync-now">
+                    <span class="icon" data-icon="refresh-cw"></span>
+                    <span data-sync-label>立即同步</span>
+                  </button>
+                </div>
+              </div>
+            </article>
+
+            <section class="section">
+              <div class="section-head">
+                <h2>今日数据</h2>
+                <a href="device.html">查看设备 <span class="icon icon-sm" data-icon="chevron-right"></span></a>
+              </div>
+              <div class="stats-grid">
+                <article class="stat-card surface">
+                  <span class="stat-icon"><span class="icon" data-icon="footprints"></span></span>
+                  <strong class="stat-value">6,842</strong>
+                  <span class="stat-label">步数</span>
+                </article>
+                <article class="stat-card surface">
+                  <span class="stat-icon"><span class="icon" data-icon="flame"></span></span>
+                  <strong class="stat-value">286</strong>
+                  <span class="stat-label">kcal</span>
+                </article>
+                <article class="stat-card surface">
+                  <span class="stat-icon"><span class="icon" data-icon="route"></span></span>
+                  <strong class="stat-value">4.8</strong>
+                  <span class="stat-label">公里</span>
+                </article>
+              </div>
+            </section>
+          </div>
+
+          <div class="stack">
+            <section class="section">
+              <div class="section-head">
+                <h2>同步状态</h2>
+                <a href="sync.html">全部</a>
+              </div>
+              <div class="compact-panel surface quick-status">
+                <div class="list-row">
+                  <span class="row-icon blue"><span class="icon" data-icon="clock"></span></span>
+                  <span class="row-main"><span class="row-title">时间与时区</span><span class="row-subtitle">手机自动同步</span></span>
+                  <span class="badge success">已完成</span>
+                </div>
+                <div class="list-row">
+                  <span class="row-icon blue"><span class="icon" data-icon="cloud-sun"></span></span>
+                  <span class="row-main"><span class="row-title">位置与天气</span><span class="row-subtitle">来自手机的一次性快照</span></span>
+                  <span class="badge success">已完成</span>
+                </div>
+                <div class="list-row">
+                  <span class="row-icon green"><span class="icon" data-icon="bell"></span></span>
+                  <span class="row-main"><span class="row-title">消息通知</span><span class="row-subtitle">短信、微信、QQ</span></span>
+                  <span class="badge success" data-notification-badge>已开启</span>
+                </div>
+                <div class="list-row">
+                  <span class="row-icon"><span class="icon" data-icon="music-2"></span></span>
+                  <span class="row-main"><span class="row-title">歌词与封面</span><span class="row-subtitle">等待媒体播放</span></span>
+                  <span class="badge">自动</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-head">
+                <h2>最近消息</h2>
+                <a href="notifications.html">查看全部</a>
+              </div>
+              <div class="notification-list">
+                <article class="notification-item surface">
+                  <span class="notification-app">微</span>
+                  <div class="notification-copy">
+                    <div class="notification-title"><strong>产品讨论群</strong><span>09:36</span></div>
+                    <p>新的固件版本已经可以开始联调。</p>
+                  </div>
+                  <span class="badge blue notification-state">已缓存</span>
+                </article>
+                <article class="notification-item surface">
+                  <span class="notification-app">短</span>
+                  <div class="notification-copy">
+                    <div class="notification-title"><strong>验证码</strong><span>09:18</span></div>
+                    <p>您的登录验证码为 4826，请勿转发。</p>
+                  </div>
+                  <span class="badge blue notification-state">已缓存</span>
+                </article>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+
+      <div data-bottom-nav></div>
+    </div>
+  </div>
+
+  <div class="toast" role="status" aria-live="polite" data-toast></div>
+</body>
+</html>

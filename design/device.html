@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f8f7">
+  <title>HSP Watch · 设备</title>
+  <link rel="icon" href="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script defer src="assets/app.js"></script>
+</head>
+<body data-page="device">
+  <div class="app-layout">
+    <div data-side-nav></div>
+
+    <div class="app-stage">
+      <header class="topbar">
+        <a class="mobile-brand" href="index.html">
+          <img src="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png" alt="">
+          <span>HSP Watch</span>
+        </a>
+        <div class="topbar-state">
+          <span class="status-dot" data-connection-dot></span>
+          <span data-connected-copy>手表已连接</span>
+        </div>
+        <time class="topbar-time" data-current-time>09:41</time>
+      </header>
+
+      <main class="page">
+        <div class="page-head">
+          <div>
+            <h1>设备</h1>
+            <p>连接、硬件状态与数据通道。</p>
+          </div>
+          <button class="btn btn-primary desktop-only" type="button" data-action="find-watch">
+            <span class="icon" data-icon="locate-fixed"></span>
+            <span data-find-label>查找手表</span>
+          </button>
+        </div>
+
+        <div class="status-banner">
+          <span class="banner-icon"><span class="icon" data-icon="radio"></span></span>
+          <div>
+            <strong>连接稳定</strong>
+            <span>通过缓存地址直连，GATT 通道已完成初始化</span>
+          </div>
+          <span class="banner-tail" data-sync-age>刚刚</span>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <article class="device-profile surface">
+              <div class="device-profile-image">
+                <img src="../docs/icon.png" alt="HSP Watch 蓝牙手表标志">
+              </div>
+              <div class="device-profile-copy">
+                <h2>HSP Watch</h2>
+                <p>D8:3A:DD:7B:21:06</p>
+                <div class="media-capabilities">
+                  <span class="badge success">已连接</span>
+                  <span class="badge">固件 0.1.0</span>
+                </div>
+              </div>
+              <div class="profile-battery">
+                <strong>82%</strong>
+                <span>未充电</span>
+              </div>
+            </article>
+
+            <section class="section">
+              <div class="section-head">
+                <h2>今日活动</h2>
+                <span class="badge">刚刚更新</span>
+              </div>
+              <div class="activity-strip">
+                <div class="activity-item"><strong>6,842</strong><span>步数</span></div>
+                <div class="activity-item"><strong>286</strong><span>kcal</span></div>
+                <div class="activity-item"><strong>4.8 km</strong><span>距离</span></div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-head"><h2>设备能力</h2></div>
+              <div class="list">
+                <div class="list-row">
+                  <span class="row-icon green"><span class="icon" data-icon="locate-fixed"></span></span>
+                  <span class="row-main"><span class="row-title">互相查找</span><span class="row-subtitle">手机控制手表，手表控制手机响铃</span></span>
+                  <span class="row-value success">可用</span>
+                </div>
+                <div class="list-row">
+                  <span class="row-icon blue"><span class="icon" data-icon="activity"></span></span>
+                  <span class="row-main"><span class="row-title">设备状态</span><span class="row-subtitle">电量、充电、运动与固件版本</span></span>
+                  <span class="row-value success">已订阅</span>
+                </div>
+                <div class="list-row">
+                  <span class="row-icon blue"><span class="icon" data-icon="refresh-cw"></span></span>
+                  <span class="row-main"><span class="row-title">数据同步</span><span class="row-subtitle">时间、天气、消息、歌词与封面</span></span>
+                  <span class="row-value success">已就绪</span>
+                </div>
+              </div>
+            </section>
+
+            <button class="btn btn-primary btn-block mobile-only" type="button" data-action="find-watch">
+              <span class="icon" data-icon="locate-fixed"></span>
+              <span data-find-label>查找手表</span>
+            </button>
+          </div>
+
+          <div class="stack">
+            <section class="section">
+              <div class="section-head"><h2>后台连接</h2></div>
+              <div class="service-control surface">
+                <div class="service-control-copy">
+                  <strong>连接服务</strong>
+                  <span>维持 BLE 链路与自动重连</span>
+                </div>
+                <label class="switch" aria-label="后台连接服务">
+                  <input type="checkbox" checked data-service-toggle>
+                  <span class="switch-track"></span>
+                </label>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-head"><h2>连接链路</h2><span class="badge success" data-service-badge>运行中</span></div>
+              <div class="timeline">
+                <div class="timeline-step">
+                  <span class="timeline-node"><span class="icon icon-sm" data-icon="check"></span></span>
+                  <div><strong>缓存地址直连</strong><span>已识别保存的 BLE 地址</span></div>
+                  <span class="badge success">完成</span>
+                </div>
+                <div class="timeline-step">
+                  <span class="timeline-node"><span class="icon icon-sm" data-icon="check"></span></span>
+                  <div><strong>GATT 服务发现</strong><span>基础特征完整</span></div>
+                  <span class="badge success">完成</span>
+                </div>
+                <div class="timeline-step">
+                  <span class="timeline-node"><span class="icon icon-sm" data-icon="check"></span></span>
+                  <div><strong>状态通知订阅</strong><span>设备状态与查找命令</span></div>
+                  <span class="badge success">完成</span>
+                </div>
+                <div class="timeline-step">
+                  <span class="timeline-node"><span class="icon icon-sm" data-icon="check"></span></span>
+                  <div><strong>同步通道</strong><span>消息与手机数据可写入</span></div>
+                  <span class="badge success">就绪</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-head"><h2>设备信息</h2></div>
+              <div class="list">
+                <div class="list-row">
+                  <span class="row-main"><span class="row-title">手表端 BLE</span></span>
+                  <span class="row-value success">已开启</span>
+                </div>
+                <div class="list-row">
+                  <span class="row-main"><span class="row-title">伴侣连接</span></span>
+                  <span class="row-value success">已确认</span>
+                </div>
+                <div class="list-row">
+                  <span class="row-main"><span class="row-title">最近状态</span></span>
+                  <span class="row-value">刚刚</span>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+
+      <div data-bottom-nav></div>
+    </div>
+  </div>
+
+  <div class="toast" role="status" aria-live="polite" data-toast></div>
+</body>
+</html>

@@ -85,6 +85,12 @@ class BleServerService : Service() {
         private const val PHONE_SYNC_WAKE_LOCK_MS = 90_000L
         private const val WEATHER_MAX_ATTEMPTS = 2
         private const val WEATHER_RETRY_DELAY_MS = 1_000L
+        private const val SYNC_WRITE_WARNING_TIMEOUT_MS = 5_000L
+        private const val SYNC_WRITE_HARD_TIMEOUT_MS = 20_000L
+        private const val SYNC_WRITE_START_RETRY_DELAY_MS = 40L
+        private const val SYNC_WRITE_START_RETRY_LIMIT = 8
+        private const val COVER_BATCH_RETRY_DELAY_MS = 1_500L
+        private const val COVER_BATCH_RETRY_LIMIT = 3
 
         fun start(context: Context) = sendForegroundCommand(context, ACTION_START)
 
@@ -155,6 +161,40 @@ class BleServerService : Service() {
     private var watchSequence: Byte = 0
     private val syncWriteQueue = ArrayDeque<ByteArray>()
     private var syncWriteInFlight = false
+    private var syncWritePacePending = false
+    private var syncWriteCommandRetries = 0
+    private val syncWriteTimeout = Runnable {
+        if (!syncWriteInFlight) return@Runnable
+
+        Log.w(TAG, "BLE sync write callback is slow; keeping the link alive")
+        handler.postDelayed(
+            syncWriteHardTimeout,
+            SYNC_WRITE_HARD_TIMEOUT_MS - SYNC_WRITE_WARNING_TIMEOUT_MS
+        )
+    }
+    private val syncWriteHardTimeout = Runnable {
+        if (!syncWriteInFlight) return@Runnable
+
+        Log.w(TAG, "BLE sync write produced no callback for $SYNC_WRITE_HARD_TIMEOUT_MS ms")
+        handleLinkFailure("蓝牙数据通道长时间无响应，正在重连", scanImmediately = false)
+    }
+    private val pacedSyncDrain = Runnable {
+        syncWritePacePending = false
+        drainSyncWriteQueue()
+    }
+    private var latestCoverGeneration = 0
+    private var latestCoverJpeg: ByteArray? = null
+    private var coverBatchRetryAttempts = 0
+    private var coverBatchRetryPending = false
+    private val retryCoverBatch = Runnable {
+        coverBatchRetryPending = false
+        val jpeg = latestCoverJpeg ?: return@Runnable
+        if (latestCoverGeneration == 0 || !BleServerStatus.state.value.syncChannelReady) {
+            return@Runnable
+        }
+        Log.i(TAG, "Retrying phone cover batch $coverBatchRetryAttempts/$COVER_BATCH_RETRY_LIMIT")
+        queueCoverPackets(latestCoverGeneration, jpeg)
+    }
     @Volatile
     private var phoneSyncGeneration = 0L
     private var activeLocationListener: LocationListener? = null
@@ -573,7 +613,9 @@ class BleServerService : Service() {
                     }
                 }
                 BleProtocol.SYNC_UUID -> handler.post {
-                    if (gatt === bluetoothGatt) completeSyncWrite(status)
+                    if (gatt === bluetoothGatt && syncWriteInFlight) {
+                        completeSyncWrite(status)
+                    }
                 }
             }
         }
@@ -709,7 +751,7 @@ class BleServerService : Service() {
             return
         }
         if (bluetoothGatt == null || syncCharacteristic == null ||
-            !BleServerStatus.state.value.connected) {
+            !BleServerStatus.state.value.syncChannelReady) {
             return
         }
 
@@ -764,11 +806,31 @@ class BleServerService : Service() {
     }
 
     private fun enqueueCover(generation: Int, jpeg: ByteArray) {
+        if (bluetoothGatt == null || syncCharacteristic == null ||
+            !BleServerStatus.state.value.syncChannelReady) {
+            Log.w(TAG, "Phone cover is ready but the HSP sync channel is unavailable")
+            return
+        }
+        val previousCover = latestCoverJpeg
+        val sameCover = previousCover != null && jpeg.contentEquals(previousCover)
+        if (generation != latestCoverGeneration || !sameCover) {
+            latestCoverGeneration = generation
+            latestCoverJpeg = jpeg
+            coverBatchRetryAttempts = 0
+            coverBatchRetryPending = false
+            handler.removeCallbacks(retryCoverBatch)
+        }
+        queueCoverPackets(generation, jpeg)
+    }
+
+    private fun queueCoverPackets(generation: Int, jpeg: ByteArray) {
         val packets = runCatching { BleProtocol.buildCoverSyncPackets(generation, jpeg) }
             .onFailure { Log.w(TAG, "Ignored invalid media cover", it) }
             .getOrNull() ?: return
+        Log.i(TAG, "Queueing phone cover: ${jpeg.size} bytes, ${packets.size - 1} data packets")
         enqueueSyncPackets(
             packets = packets,
+            priority = true,
             replaceCommands = setOf(
                 BleProtocol.SYNC_COMMAND_COVER_BEGIN,
                 BleProtocol.SYNC_COMMAND_COVER_DATA
@@ -778,16 +840,18 @@ class BleServerService : Service() {
 
     /** Android permits only one outstanding GATT write, so packets are serialized here. */
     private fun drainSyncWriteQueue() {
-        if (syncWriteInFlight || syncWriteQueue.isEmpty()) return
+        if (syncWriteInFlight || syncWritePacePending || syncWriteQueue.isEmpty()) return
 
         val gatt = bluetoothGatt
         val characteristic = syncCharacteristic
-        if (gatt == null || characteristic == null || !BleServerStatus.state.value.connected) {
+        if (gatt == null || characteristic == null ||
+            !BleServerStatus.state.value.syncChannelReady) {
             pendingPhoneSync = true
             return
         }
 
         val packet = syncWriteQueue.peekFirst() ?: return
+        val coverPacket = isCoverPacket(packet)
         val started = try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeCharacteristic(
@@ -805,27 +869,89 @@ class BleServerService : Service() {
             }
         } catch (exception: SecurityException) {
             setError("蓝牙连接权限已被撤销")
-            false
+            return
         }
 
         if (started) {
+            syncWriteCommandRetries = 0
             syncWriteInFlight = true
+            handler.removeCallbacks(syncWriteTimeout)
+            handler.removeCallbacks(syncWriteHardTimeout)
+            handler.postDelayed(syncWriteTimeout, SYNC_WRITE_WARNING_TIMEOUT_MS)
         } else {
-            syncWriteQueue.clear()
-            BleServerStatus.update { it.copy(lastMessage = "手机数据同步命令未能发送") }
+            if (syncWriteCommandRetries < SYNC_WRITE_START_RETRY_LIMIT) {
+                syncWriteCommandRetries += 1
+                syncWritePacePending = true
+                handler.postDelayed(pacedSyncDrain, SYNC_WRITE_START_RETRY_DELAY_MS)
+                return
+            }
+            syncWritePacePending = false
+            syncWriteCommandRetries = 0
+            handler.removeCallbacks(syncWriteTimeout)
+            handler.removeCallbacks(syncWriteHardTimeout)
+            if (coverPacket) {
+                discardQueuedCoverPackets()
+                scheduleCoverBatchRetry("Android 暂时无法启动封面写入")
+            } else {
+                syncWriteQueue.pollFirst()
+                BleServerStatus.update { it.copy(lastMessage = "手机数据同步命令未能发送") }
+            }
+            drainSyncWriteQueue()
         }
     }
 
     private fun completeSyncWrite(status: Int) {
+        if (!syncWriteInFlight) return
+
+        handler.removeCallbacks(syncWriteTimeout)
+        handler.removeCallbacks(syncWriteHardTimeout)
         syncWriteInFlight = false
+        val completedPacket = syncWriteQueue.peekFirst()
         if (status != BluetoothGatt.GATT_SUCCESS) {
-            syncWriteQueue.clear()
-            BleServerStatus.update { it.copy(lastMessage = "手机数据同步失败：$status") }
+            if (isCoverPacket(completedPacket)) {
+                discardQueuedCoverPackets()
+                scheduleCoverBatchRetry("手表拒绝封面分包：$status")
+            } else {
+                syncWriteQueue.pollFirst()
+                BleServerStatus.update { it.copy(lastMessage = "手机数据同步失败：$status") }
+            }
+            drainSyncWriteQueue()
             return
         }
 
         syncWriteQueue.pollFirst()
+        if (isCoverPacket(completedPacket) &&
+            syncWriteQueue.none { queued -> isCoverPacket(queued) }) {
+            coverBatchRetryAttempts = 0
+            Log.i(TAG, "Phone cover batch delivered and acknowledged by the watch")
+        }
         drainSyncWriteQueue()
+    }
+
+    private fun isCoverPacket(packet: ByteArray?): Boolean = when (packet?.firstOrNull()) {
+        BleProtocol.SYNC_COMMAND_COVER_BEGIN,
+        BleProtocol.SYNC_COMMAND_COVER_DATA -> true
+        else -> false
+    }
+
+    private fun discardQueuedCoverPackets() {
+        val iterator = syncWriteQueue.iterator()
+        while (iterator.hasNext()) {
+            if (isCoverPacket(iterator.next())) iterator.remove()
+        }
+    }
+
+    private fun scheduleCoverBatchRetry(reason: String) {
+        Log.w(TAG, reason)
+        if (coverBatchRetryPending || coverBatchRetryAttempts >= COVER_BATCH_RETRY_LIMIT) {
+            if (coverBatchRetryAttempts >= COVER_BATCH_RETRY_LIMIT) {
+                Log.e(TAG, "Phone cover retry limit reached")
+            }
+            return
+        }
+        coverBatchRetryAttempts += 1
+        coverBatchRetryPending = true
+        handler.postDelayed(retryCoverBatch, COVER_BATCH_RETRY_DELAY_MS)
     }
 
     private fun requestPhoneLocationAndWeather() {
@@ -1447,6 +1573,13 @@ class BleServerService : Service() {
             isConnecting = false
             syncWriteQueue.clear()
             syncWriteInFlight = false
+            syncWritePacePending = false
+            syncWriteCommandRetries = 0
+            handler.removeCallbacks(syncWriteTimeout)
+            handler.removeCallbacks(syncWriteHardTimeout)
+            handler.removeCallbacks(pacedSyncDrain)
+            handler.removeCallbacks(retryCoverBatch)
+            coverBatchRetryPending = false
         }
         try {
             gatt?.disconnect()
