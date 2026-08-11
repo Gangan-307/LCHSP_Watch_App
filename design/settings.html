@@ -4,162 +4,56 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f7f8f7">
-  <title>HSP Watch · 设置与诊断</title>
+  <title>HSP Watch · 更多</title>
   <link rel="icon" href="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png">
   <link rel="stylesheet" href="assets/styles.css">
   <script defer src="assets/app.js"></script>
 </head>
 <body data-page="settings">
-  <div class="app-layout">
-    <div data-side-nav></div>
-
-    <div class="app-stage">
-      <header class="topbar">
-        <a class="mobile-brand" href="index.html">
-          <img src="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png" alt="">
-          <span>HSP Watch</span>
-        </a>
-        <div class="topbar-state">
-          <span class="status-dot" data-connection-dot></span>
-          <span data-connected-copy>手表已连接</span>
+  <div class="prototype-stage">
+    <div class="phone-frame">
+      <div class="phone-screen">
+        <div class="system-bar">
+          <time data-current-time>09:41</time>
+          <div class="system-icons" aria-hidden="true"><span class="icon" data-icon="wifi"></span><span class="icon" data-icon="battery-charging"></span></div>
         </div>
-        <time class="topbar-time" data-current-time>09:41</time>
-      </header>
+        <header class="app-bar">
+          <a class="app-brand" href="index.html"><img src="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png" alt=""><span>HSP Watch</span></a>
+          <span class="connection-chip"><span class="status-dot" data-connection-dot></span><span data-connected-copy>手表已连接</span></span>
+        </header>
 
-      <main class="page">
-        <div class="page-head">
-          <div>
-            <h1>设置与诊断</h1>
-            <p>系统权限、后台连接与 BLE 运行状态。</p>
-          </div>
-        </div>
+        <main class="phone-content">
+          <div class="page-head"><h1>更多</h1><p>系统权限与连接诊断。</p></div>
 
-        <div class="status-banner">
-          <span class="banner-icon"><span class="icon" data-icon="shield-check"></span></span>
-          <div>
-            <strong>运行条件完整</strong>
-            <span>蓝牙、权限和后台服务均可用</span>
-          </div>
-          <span class="banner-tail">App 1.0</span>
-        </div>
+          <section class="section" style="margin-top: 0">
+            <div class="section-head"><h2>系统状态</h2><span>运行正常</span></div>
+            <div class="settings-list">
+              <div class="setting-row"><span class="row-icon green"><span class="icon" data-icon="bluetooth"></span></span><span class="row-copy"><strong>手机蓝牙</strong><span>用于扫描和连接手表</span></span><span class="row-state good" data-bluetooth-state>已开启</span></div>
+              <div class="setting-row"><span class="row-icon green"><span class="icon" data-icon="shield-check"></span></span><span class="row-copy"><strong>所需权限</strong><span>蓝牙、位置与通知权限</span></span><span class="row-state good" data-permission-state>已允许</span></div>
+              <div class="setting-row"><span class="row-icon"><span class="icon" data-icon="database"></span></span><span class="row-copy"><strong>本地数据</strong><span>BLE 地址和最多 5 条消息</span></span><span class="row-state">设备内</span></div>
+            </div>
+          </section>
 
-        <div class="detail-grid">
-          <div class="stack">
-            <section class="section">
-              <div class="section-head"><h2>连接服务</h2></div>
-              <div class="service-control surface">
-                <div class="service-control-copy">
-                  <strong>后台保持连接</strong>
-                  <span>自动直连、扫描回退与断线重连</span>
-                </div>
-                <label class="switch" aria-label="后台保持连接">
-                  <input type="checkbox" checked data-service-toggle>
-                  <span class="switch-track"></span>
-                </label>
+          <section class="section">
+            <details class="diagnostics">
+              <summary><span class="icon" data-icon="bug"></span><span>BLE 诊断</span><span class="icon chevron" data-icon="chevron-right"></span></summary>
+              <div class="diagnostic-content">
+                <div class="diagnostic-row"><span>前台服务</span><span class="good-text" data-service-state>运行中</span></div>
+                <div class="diagnostic-row"><span>GATT 连接</span><span class="good-text" data-connection-value>已连接</span></div>
+                <div class="diagnostic-row"><span>状态通道</span><span class="good-text" data-status-channel>已订阅</span></div>
+                <div class="diagnostic-row"><span>同步通道</span><span class="good-text" data-sync-channel>已就绪</span></div>
+                <div class="diagnostic-row"><span>BLE 地址</span><span>D8:3A:DD:7B:21:06</span></div>
               </div>
-            </section>
+            </details>
+          </section>
 
-            <section class="section">
-              <div class="section-head"><h2>系统条件</h2></div>
-              <div class="settings-group">
-                <div class="setting-row">
-                  <span class="row-icon green"><span class="icon" data-icon="bluetooth"></span></span>
-                  <span class="row-main"><span class="row-title">蓝牙</span><span class="row-subtitle">低功耗蓝牙已开启</span></span>
-                  <span class="badge success" data-bluetooth-state>已开启</span>
-                </div>
-                <div class="setting-row">
-                  <span class="row-icon green"><span class="icon" data-icon="shield-check"></span></span>
-                  <span class="row-main"><span class="row-title">蓝牙权限</span><span class="row-subtitle">扫描与连接</span></span>
-                  <span class="badge success" data-permission-state>已允许</span>
-                </div>
-                <div class="setting-row">
-                  <span class="row-icon green"><span class="icon" data-icon="map-pin"></span></span>
-                  <span class="row-main"><span class="row-title">定位权限</span><span class="row-subtitle">位置、城市与天气同步</span></span>
-                  <span class="badge success" data-permission-state>已允许</span>
-                </div>
-                <div class="setting-row">
-                  <span class="row-icon green"><span class="icon" data-icon="bell"></span></span>
-                  <span class="row-main"><span class="row-title">Android 通知</span><span class="row-subtitle">前台服务通知</span></span>
-                  <span class="badge success" data-permission-state>已允许</span>
-                </div>
-                <div class="setting-row">
-                  <span class="row-icon green"><span class="icon" data-icon="lock-keyhole"></span></span>
-                  <span class="row-main"><span class="row-title">通知使用权</span><span class="row-subtitle">消息与媒体会话读取</span></span>
-                  <button class="btn btn-secondary" type="button" data-action="manage-notifications">
-                    <span data-notification-action-label>管理</span>
-                    <span class="icon icon-sm" data-icon="external-link"></span>
-                  </button>
-                </div>
-              </div>
-            </section>
+          <section class="section"><button class="btn btn-secondary btn-block" type="button" data-action="grant-permissions"><span class="icon" data-icon="shield-check"></span><span>检查所需权限</span></button></section>
+        </main>
 
-            <section class="section">
-              <div class="section-head"><h2>提醒行为</h2></div>
-              <div class="list">
-                <div class="list-row">
-                  <span class="row-icon"><span class="icon" data-icon="smartphone"></span></span>
-                  <span class="row-main"><span class="row-title">手机声音与勿扰</span><span class="row-subtitle">响铃提醒遵循手机当前设置</span></span>
-                  <span class="row-value">跟随系统</span>
-                </div>
-              </div>
-            </section>
-          </div>
-
-          <div class="stack">
-            <section class="section">
-              <div class="section-head"><h2>应用信息</h2></div>
-              <div class="list">
-                <div class="list-row">
-                  <span class="row-icon"><span class="icon" data-icon="smartphone"></span></span>
-                  <span class="row-main"><span class="row-title">HSP Watch</span><span class="row-subtitle">Android 手机伴侣</span></span>
-                  <span class="row-value">1.0</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-icon"><span class="icon" data-icon="database"></span></span>
-                  <span class="row-main"><span class="row-title">本地数据</span><span class="row-subtitle">BLE 地址与最多 5 条消息</span></span>
-                  <span class="row-value">设备内</span>
-                </div>
-              </div>
-            </section>
-
-            <section class="section">
-              <div class="section-head"><h2>高级信息</h2></div>
-              <details class="diagnostics" open>
-                <summary>
-                  <span class="icon" data-icon="bug"></span>
-                  <span>BLE 诊断</span>
-                  <span class="icon summary-chevron" data-icon="chevron-right"></span>
-                </summary>
-                <div class="diagnostic-content">
-                  <div class="diagnostic-row"><span>BLE 硬件</span><span class="success-text">正常</span></div>
-                  <div class="diagnostic-row"><span>前台服务</span><span class="success-text" data-service-state>运行中</span></div>
-                  <div class="diagnostic-row"><span>扫描状态</span><span>空闲</span></div>
-                  <div class="diagnostic-row"><span>GATT 连接</span><span class="success-text" data-connection-value>已连接</span></div>
-                  <div class="diagnostic-row"><span>查找命令通道</span><span class="success-text" data-command-channel>已就绪</span></div>
-                  <div class="diagnostic-row"><span>设备状态通道</span><span class="success-text" data-status-channel>已订阅</span></div>
-                  <div class="diagnostic-row"><span>数据同步通道</span><span class="success-text" data-sync-channel>已就绪</span></div>
-                  <div class="diagnostic-row"><span>协议兼容</span><span class="success-text">正常</span></div>
-                  <div class="diagnostic-row"><span>手机响铃</span><span>空闲</span></div>
-                  <div class="diagnostic-row"><span>BLE 地址</span><span>D8:3A:DD:7B:21:06</span></div>
-                  <div class="diagnostic-row"><span>最近消息</span><span>状态与手机同步已就绪</span></div>
-                </div>
-              </details>
-            </section>
-
-            <section class="section">
-              <button class="btn btn-secondary btn-block" type="button" data-action="grant-permissions">
-                <span class="icon" data-icon="shield-check"></span>
-                <span>检查所需权限</span>
-              </button>
-            </section>
-          </div>
-        </div>
-      </main>
-
-      <div data-bottom-nav></div>
+        <div data-bottom-nav></div>
+        <div class="toast" role="status" aria-live="polite" data-toast></div>
+      </div>
     </div>
   </div>
-
-  <div class="toast" role="status" aria-live="polite" data-toast></div>
 </body>
 </html>

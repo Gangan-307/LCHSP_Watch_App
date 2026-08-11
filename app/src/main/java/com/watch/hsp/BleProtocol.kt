@@ -51,21 +51,22 @@ object BleProtocol {
     const val NOTIFICATION_APP_WECHAT = 2
     const val NOTIFICATION_APP_QQ = 3
 
-    private const val MAX_SYNC_PACKET_BYTES = 20
+    /** Safe ATT value bounds for the watch SYNC characteristic. */
+    const val DEFAULT_SYNC_PACKET_BYTES = 20
+    const val MAX_SYNC_PACKET_BYTES = 244
     private const val NOTIFICATION_BEGIN_LENGTH = 10
     private const val NOTIFICATION_DATA_HEADER_LENGTH = 5
     private const val NOTIFICATION_TITLE_MAX_BYTES = 96
     private const val NOTIFICATION_BODY_MAX_BYTES = 512
     private const val NOTIFICATION_DATA_MAX_BYTES =
-        MAX_SYNC_PACKET_BYTES - NOTIFICATION_DATA_HEADER_LENGTH
+        DEFAULT_SYNC_PACKET_BYTES - NOTIFICATION_DATA_HEADER_LENGTH
     private const val LYRIC_BEGIN_LENGTH = 5
     private const val LYRIC_DATA_HEADER_LENGTH = 5
     private const val LYRIC_MAX_BYTES = 192
-    private const val LYRIC_DATA_MAX_BYTES = MAX_SYNC_PACKET_BYTES - LYRIC_DATA_HEADER_LENGTH
+    private const val LYRIC_DATA_MAX_BYTES = DEFAULT_SYNC_PACKET_BYTES - LYRIC_DATA_HEADER_LENGTH
     private const val COVER_BEGIN_LENGTH = 11
     private const val COVER_DATA_HEADER_LENGTH = 7
     const val COVER_MAX_BYTES = 8 * 1024
-    private const val COVER_DATA_MAX_BYTES = MAX_SYNC_PACKET_BYTES - COVER_DATA_HEADER_LENGTH
 
     fun packet(command: Byte, sequence: Byte): ByteArray = byteArrayOf(command, sequence)
 
@@ -134,7 +135,7 @@ object BleProtocol {
             .trim()
         require(displayCity.any { character -> character.isLetterOrDigit() })
 
-        val maxPayloadBytes = MAX_SYNC_PACKET_BYTES - 1
+        val maxPayloadBytes = DEFAULT_SYNC_PACKET_BYTES - 1
         val payload = displayCity.take(maxPayloadBytes).toByteArray(Charsets.US_ASCII)
         val packet = ByteArray(payload.size + 1)
         packet[0] = SYNC_COMMAND_CITY
@@ -212,11 +213,24 @@ object BleProtocol {
         return packets
     }
 
-    /** Transfer a small JPEG cover with an end-to-end CRC32 integrity check. */
-    fun buildCoverSyncPackets(generation: Int, jpeg: ByteArray): List<ByteArray> {
+    /**
+     * Transfer a small JPEG cover with an end-to-end CRC32 integrity check.
+     *
+     * Only cover data uses the negotiated MTU. The other SYNC commands retain
+     * their 20-byte layout so older firmware remains compatible.
+     */
+    fun buildCoverSyncPackets(
+        generation: Int,
+        jpeg: ByteArray,
+        packetLimit: Int = DEFAULT_SYNC_PACKET_BYTES
+    ): List<ByteArray> {
         require(generation in 1..0xffff)
         require(jpeg.isNotEmpty() && jpeg.size <= COVER_MAX_BYTES)
         require(jpeg.size >= 4 && jpeg[0] == 0xff.toByte() && jpeg[1] == 0xd8.toByte())
+        val safePacketLimit = packetLimit.coerceIn(
+            DEFAULT_SYNC_PACKET_BYTES,
+            MAX_SYNC_PACKET_BYTES
+        )
 
         val packets = ArrayList<ByteArray>()
         val begin = ByteArray(COVER_BEGIN_LENGTH)
@@ -228,7 +242,10 @@ object BleProtocol {
 
         var offset = 0
         while (offset < jpeg.size) {
-            val length = minOf(COVER_DATA_MAX_BYTES, jpeg.size - offset)
+            val length = minOf(
+                safePacketLimit - COVER_DATA_HEADER_LENGTH,
+                jpeg.size - offset
+            )
             val data = ByteArray(COVER_DATA_HEADER_LENGTH + length)
             data[0] = SYNC_COMMAND_COVER_DATA
             writeUInt16Le(data, 1, generation)

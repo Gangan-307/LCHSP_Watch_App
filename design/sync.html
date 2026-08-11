@@ -10,155 +10,45 @@
   <script defer src="assets/app.js"></script>
 </head>
 <body data-page="sync">
-  <div class="app-layout">
-    <div data-side-nav></div>
-
-    <div class="app-stage">
-      <header class="topbar">
-        <a class="mobile-brand" href="index.html">
-          <img src="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png" alt="">
-          <span>HSP Watch</span>
-        </a>
-        <div class="topbar-state">
-          <span class="status-dot" data-connection-dot></span>
-          <span data-connected-copy>手表已连接</span>
+  <div class="prototype-stage">
+    <div class="phone-frame">
+      <div class="phone-screen">
+        <div class="system-bar">
+          <time data-current-time>09:41</time>
+          <div class="system-icons" aria-hidden="true"><span class="icon" data-icon="wifi"></span><span class="icon" data-icon="battery-charging"></span></div>
         </div>
-        <time class="topbar-time" data-current-time>09:41</time>
-      </header>
+        <header class="app-bar">
+          <a class="app-brand" href="index.html"><img src="../app/src/main/res/mipmap-xxxhdpi/ic_launcher_watch.png" alt=""><span>HSP Watch</span></a>
+          <span class="connection-chip"><span class="status-dot" data-connection-dot></span><span data-connected-copy>手表已连接</span></span>
+        </header>
 
-      <main class="page">
-        <div class="page-head">
-          <div>
-            <h1>手机同步</h1>
-            <p>手机数据、消息与媒体内容共用安全的 BLE 写入队列。</p>
-          </div>
-        </div>
+        <main class="phone-content">
+          <div class="page-head"><h1>数据同步</h1><p>将手机信息发送到手表。</p></div>
 
-        <article class="sync-overview surface">
-          <div class="sync-overview-main">
-            <span class="sync-orbit"><span class="icon icon-lg" data-icon="refresh-cw"></span></span>
-            <div>
-              <h2 data-sync-result>数据同步已就绪</h2>
-              <p>最近同步 <span data-sync-age>刚刚</span> · 时间同步不依赖定位权限</p>
+          <article class="sync-summary surface">
+            <div class="sync-summary-head">
+              <span class="sync-symbol"><span class="icon" data-icon="refresh-cw"></span></span>
+              <div><h2 data-sync-result>同步已就绪</h2><p>最近同步 <span data-sync-age>刚刚</span></p></div>
             </div>
-          </div>
-          <button class="btn btn-primary" type="button" data-action="sync-now">
-            <span class="icon" data-icon="refresh-cw"></span>
-            <span data-sync-label>立即同步</span>
-          </button>
-        </article>
-        <div class="sync-progress" data-sync-progress><span></span></div>
+            <button class="btn btn-primary btn-block" type="button" data-action="sync-now"><span class="icon" data-icon="refresh-cw"></span><span data-sync-label>立即同步</span></button>
+            <div class="sync-progress" data-sync-progress><span></span></div>
+          </article>
 
-        <div class="detail-grid mt-28">
-          <div class="stack">
-            <section class="section">
-              <div class="section-head"><h2>手机数据</h2><span class="badge success">通道就绪</span></div>
-              <div class="list">
-                <div class="list-row">
-                  <span class="row-icon blue"><span class="icon" data-icon="clock"></span></span>
-                  <span class="row-main"><span class="row-title">时间与时区</span><span class="row-subtitle">连接后自动同步</span></span>
-                  <span class="row-value success">已同步</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-icon blue"><span class="icon" data-icon="navigation"></span></span>
-                  <span class="row-main"><span class="row-title">手机位置</span><span class="row-subtitle">单次定位，不持续跟踪</span></span>
-                  <span class="row-value success">已允许</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-icon"><span class="icon" data-icon="map-pin"></span></span>
-                  <span class="row-main"><span class="row-title">城市</span><span class="row-subtitle">Android Geocoder</span></span>
-                  <span class="row-value">自动</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-icon amber"><span class="icon" data-icon="cloud-sun"></span></span>
-                  <span class="row-main"><span class="row-title">天气</span><span class="row-subtitle">Open-Meteo 当前天气与当日高低温</span></span>
-                  <span class="row-value">自动</span>
-                </div>
-              </div>
-            </section>
+          <section class="section">
+            <div class="section-head"><h2>本次内容</h2><span>自动更新</span></div>
+            <div class="key-list">
+              <div class="key-row"><span class="row-icon blue"><span class="icon" data-icon="clock"></span></span><span class="row-copy"><strong>时间与时区</strong><span>连接后自动同步</span></span><span class="row-state good">已同步</span></div>
+              <div class="key-row"><span class="row-icon blue"><span class="icon" data-icon="map-pin"></span></span><span class="row-copy"><strong>位置与城市</strong><span>单次定位，不持续跟踪</span></span><span class="row-state" data-permission-state>已允许</span></div>
+              <div class="key-row"><span class="row-icon amber"><span class="icon" data-icon="cloud-sun"></span></span><span class="row-copy"><strong>天气</strong><span>当前天气与当日高低温</span></span><span class="row-state good">可用</span></div>
+              <div class="key-row"><span class="row-icon"><span class="icon" data-icon="music-2"></span></span><span class="row-copy"><strong>歌词与封面</strong><span>播放时自动更新</span></span><span class="row-state">等待播放</span></div>
+            </div>
+          </section>
+        </main>
 
-            <section class="section">
-              <div class="section-head"><h2>媒体同步</h2><span class="badge">自动</span></div>
-              <article class="media-panel surface">
-                <div class="media-art"><span class="icon" data-icon="music-2"></span></div>
-                <div class="media-content">
-                  <span class="eyebrow">当前媒体</span>
-                  <h3>暂无活动媒体</h3>
-                  <p>等待手机媒体会话</p>
-                  <div class="media-capabilities">
-                    <span class="badge blue">逐行歌词</span>
-                    <span class="badge">128 px 封面</span>
-                    <span class="badge">最大 8 KiB</span>
-                  </div>
-                </div>
-              </article>
-              <div class="list mt-12">
-                <div class="list-row">
-                  <span class="row-icon"><span class="icon" data-icon="music-2"></span></span>
-                  <span class="row-main"><span class="row-title">歌词来源</span><span class="row-subtitle">LRCLIB，同步当前播放行</span></span>
-                  <span class="row-value">等待播放</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-icon"><span class="icon" data-icon="image"></span></span>
-                  <span class="row-main"><span class="row-title">专辑封面</span><span class="row-subtitle">JPEG 压缩与 CRC32 校验</span></span>
-                  <span class="row-value">等待播放</span>
-                </div>
-              </div>
-            </section>
-          </div>
-
-          <div class="stack">
-            <section class="section">
-              <div class="section-head"><h2>运行条件</h2></div>
-              <div class="compact-panel surface quick-status">
-                <div class="list-row">
-                  <span class="row-icon green"><span class="icon" data-icon="link"></span></span>
-                  <span class="row-main"><span class="row-title">数据同步通道</span><span class="row-subtitle">SYNC Characteristic</span></span>
-                  <span class="badge success" data-sync-channel>已就绪</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-icon green"><span class="icon" data-icon="map-pin"></span></span>
-                  <span class="row-main"><span class="row-title">定位权限</span><span class="row-subtitle">精确或大致位置</span></span>
-                  <span class="badge success" data-permission-state>已允许</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-icon green"><span class="icon" data-icon="bell"></span></span>
-                  <span class="row-main"><span class="row-title">通知使用权</span><span class="row-subtitle">媒体会话与消息读取</span></span>
-                  <span class="badge success" data-notification-badge data-notification-access>已开启</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-icon"><span class="icon" data-icon="wifi"></span></span>
-                  <span class="row-main"><span class="row-title">网络服务</span><span class="row-subtitle">天气、歌词与远程封面</span></span>
-                  <span class="badge success">可用</span>
-                </div>
-              </div>
-            </section>
-
-            <section class="section">
-              <div class="section-head"><h2>传输策略</h2></div>
-              <div class="list">
-                <div class="list-row">
-                  <span class="row-main"><span class="row-title">写入队列</span><span class="row-subtitle">单个 GATT write 串行发送</span></span>
-                  <span class="row-value success">空闲</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-main"><span class="row-title">定位方式</span><span class="row-subtitle">优先最近位置，否则单次请求</span></span>
-                  <span class="row-value">按需</span>
-                </div>
-                <div class="list-row">
-                  <span class="row-main"><span class="row-title">消息缓存</span><span class="row-subtitle">连接恢复后补发</span></span>
-                  <span class="row-value">最多 5 条</span>
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-      </main>
-
-      <div data-bottom-nav></div>
+        <div data-bottom-nav></div>
+        <div class="toast" role="status" aria-live="polite" data-toast></div>
+      </div>
     </div>
   </div>
-
-  <div class="toast" role="status" aria-live="polite" data-toast></div>
 </body>
 </html>

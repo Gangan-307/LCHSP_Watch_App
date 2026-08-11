@@ -122,6 +122,14 @@ function setText(selector, value) {
   });
 }
 
+function setIndicator(selector, active) {
+  document.querySelectorAll(selector).forEach((element) => {
+    element.classList.toggle('good', active);
+    element.classList.toggle('good-text', active);
+    element.classList.toggle('warning', !active);
+  });
+}
+
 function showToast(message, icon = 'check') {
   const toast = document.querySelector('[data-toast]');
   if (!toast) return;
@@ -144,6 +152,11 @@ function updateConnectionUi(state) {
   setText('[data-command-channel]', connected ? '已就绪' : '不可用');
   setText('[data-status-channel]', connected ? '已订阅' : '不可用');
   setText('[data-sync-channel]', connected ? '已就绪' : '不可用');
+  setIndicator('[data-service-state]', state.service);
+  setIndicator('[data-bluetooth-state]', state.bluetooth);
+  setIndicator('[data-permission-state]', state.permissions);
+  setIndicator('[data-notification-access], [data-notification-badge]', state.notificationAccess);
+  setIndicator('[data-connection-value], [data-command-channel], [data-status-channel], [data-sync-channel]', connected);
 
   document.querySelectorAll('[data-connection-dot]').forEach((dot) => {
     dot.style.background = connected ? 'var(--success)' : 'var(--danger)';
@@ -160,15 +173,6 @@ function updateConnectionUi(state) {
     label.textContent = connected ? '查找手表' : '启动并查找手表';
   });
 
-  document.querySelectorAll('[data-service-badge]').forEach((badge) => {
-    badge.classList.toggle('success', state.service);
-    badge.classList.toggle('danger', !state.service);
-  });
-
-  document.querySelectorAll('[data-notification-badge]').forEach((badge) => {
-    badge.classList.toggle('success', state.notificationAccess);
-    badge.classList.toggle('warning', !state.notificationAccess);
-  });
 }
 
 function handleFind(button, state) {

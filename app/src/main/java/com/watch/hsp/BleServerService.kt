@@ -78,6 +78,9 @@ class BleServerService : Service() {
         private const val RECONNECT_DELAY_MS = 3_000L
         private const val SCAN_FAILURE_RETRY_MS = 5_000L
         private const val SCAN_TOO_FREQUENTLY_RETRY_MS = 30_000L
+        private const val DEFAULT_BLE_MTU = 23
+        private const val REQUESTED_BLE_MTU = 247
+        private const val MTU_NEGOTIATION_TIMEOUT_MS = 1_500L
         private const val LOCATION_CACHE_MAX_AGE_MS = 5 * 60_000L
         private const val LOCATION_LIVE_MAX_AGE_MS = 60_000L
         private const val LOCATION_MOCK_MAX_AGE_MS = 30_000L
@@ -159,6 +162,9 @@ class BleServerService : Service() {
     private var pendingFindWatch = false
     private var pendingPhoneSync = false
     private var watchSequence: Byte = 0
+    private var syncPacketMaxBytes = BleProtocol.DEFAULT_SYNC_PACKET_BYTES
+    private var mtuNegotiationPending = false
+    private var serviceDiscoveryStarted = false
     private val syncWriteQueue = ArrayDeque<ByteArray>()
     private var syncWriteInFlight = false
     private var syncWritePacePending = false
@@ -224,6 +230,14 @@ class BleServerService : Service() {
         if (!isConnecting) return@Runnable
         val source = if (connectingFromCachedAddress) "缓存地址直连超时" else "扫描后连接超时"
         handleLinkFailure(source, scanImmediately = connectingFromCachedAddress)
+    }
+
+    private val mtuNegotiationTimeout = Runnable {
+        val gatt = bluetoothGatt ?: return@Runnable
+        if (!mtuNegotiationPending || serviceDiscoveryStarted) return@Runnable
+
+        Log.w(TAG, "MTU negotiation timed out; using 20-byte SYNC packets")
+        finishMtuNegotiation(gatt, null)
     }
 
     private val reconnectTask = Runnable {
@@ -367,6 +381,7 @@ class BleServerService : Service() {
     private fun connectToWatch(device: BluetoothDevice, fromCachedAddress: Boolean) {
         if (bluetoothGatt != null || isConnecting) return
 
+        resetMtuNegotiation()
         connectingFromCachedAddress = fromCachedAddress
         isConnecting = true
         BleServerStatus.update {
@@ -497,15 +512,13 @@ class BleServerService : Service() {
             if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
                 handler.removeCallbacks(reconnectTask)
                 pendingScanFallbackReason = null
-                Log.i(TAG, "Connected to watch ${gatt.device.address}; discovering services")
+                Log.i(TAG, "Connected to watch ${gatt.device.address}; requesting MTU")
                 BleServerStatus.update {
                     it.copy(connected = true, commandChannelReady = false, statusChannelReady = false,
                         syncChannelReady = false,
-                        watchAddress = gatt.device.address, lastMessage = "已连接手表，正在发现服务")
+                        watchAddress = gatt.device.address, lastMessage = "已连接手表，正在协商传输速度")
                 }
-                if (!gatt.discoverServices()) {
-                    handleLinkFailure("无法发现手表服务", scanImmediately = false)
-                }
+                requestMtuBeforeServiceDiscovery(gatt)
                 return
             }
 
@@ -540,6 +553,22 @@ class BleServerService : Service() {
             }
 
             enableStateNotifications(gatt, stateCharacteristic!!)
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (gatt !== bluetoothGatt) return
+
+            if (status == BluetoothGatt.GATT_SUCCESS && mtu >= DEFAULT_BLE_MTU) {
+                syncPacketMaxBytes = (mtu - 3).coerceIn(
+                    BleProtocol.DEFAULT_SYNC_PACKET_BYTES,
+                    BleProtocol.MAX_SYNC_PACKET_BYTES
+                )
+                Log.i(TAG, "MTU negotiated: $mtu; SYNC values up to $syncPacketMaxBytes bytes")
+                finishMtuNegotiation(gatt, mtu)
+            } else {
+                Log.w(TAG, "MTU negotiation failed: status=$status mtu=$mtu; using 20-byte SYNC packets")
+                finishMtuNegotiation(gatt, null)
+            }
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
@@ -618,6 +647,52 @@ class BleServerService : Service() {
                     }
                 }
             }
+        }
+    }
+
+    private fun resetMtuNegotiation() {
+        handler.removeCallbacks(mtuNegotiationTimeout)
+        syncPacketMaxBytes = BleProtocol.DEFAULT_SYNC_PACKET_BYTES
+        mtuNegotiationPending = false
+        serviceDiscoveryStarted = false
+    }
+
+    private fun requestMtuBeforeServiceDiscovery(gatt: BluetoothGatt) {
+        if (gatt !== bluetoothGatt) return
+
+        mtuNegotiationPending = true
+        val started = try {
+            gatt.requestMtu(REQUESTED_BLE_MTU)
+        } catch (exception: SecurityException) {
+            setError("蓝牙连接权限已被撤销")
+            return
+        } catch (exception: IllegalStateException) {
+            Log.w(TAG, "Unable to request BLE MTU", exception)
+            false
+        }
+
+        if (!started) {
+            Log.w(TAG, "Unable to start MTU negotiation; using 20-byte SYNC packets")
+            finishMtuNegotiation(gatt, null)
+            return
+        }
+
+        handler.removeCallbacks(mtuNegotiationTimeout)
+        handler.postDelayed(mtuNegotiationTimeout, MTU_NEGOTIATION_TIMEOUT_MS)
+    }
+
+    private fun finishMtuNegotiation(gatt: BluetoothGatt, mtu: Int?) {
+        if (gatt !== bluetoothGatt || serviceDiscoveryStarted) return
+
+        handler.removeCallbacks(mtuNegotiationTimeout)
+        mtuNegotiationPending = false
+        if (mtu == null) {
+            syncPacketMaxBytes = BleProtocol.DEFAULT_SYNC_PACKET_BYTES
+        }
+        serviceDiscoveryStarted = true
+
+        if (!gatt.discoverServices()) {
+            handleLinkFailure("无法发现手表服务", scanImmediately = false)
         }
     }
 
@@ -824,10 +899,13 @@ class BleServerService : Service() {
     }
 
     private fun queueCoverPackets(generation: Int, jpeg: ByteArray) {
-        val packets = runCatching { BleProtocol.buildCoverSyncPackets(generation, jpeg) }
+        val packets = runCatching {
+            BleProtocol.buildCoverSyncPackets(generation, jpeg, syncPacketMaxBytes)
+        }
             .onFailure { Log.w(TAG, "Ignored invalid media cover", it) }
             .getOrNull() ?: return
-        Log.i(TAG, "Queueing phone cover: ${jpeg.size} bytes, ${packets.size - 1} data packets")
+        Log.i(TAG, "Queueing phone cover: ${jpeg.size} bytes, ${packets.size - 1} data packets, " +
+            "$syncPacketMaxBytes-byte SYNC values")
         enqueueSyncPackets(
             packets = packets,
             priority = true,
@@ -1580,6 +1658,7 @@ class BleServerService : Service() {
             handler.removeCallbacks(pacedSyncDrain)
             handler.removeCallbacks(retryCoverBatch)
             coverBatchRetryPending = false
+            resetMtuNegotiation()
         }
         try {
             gatt?.disconnect()

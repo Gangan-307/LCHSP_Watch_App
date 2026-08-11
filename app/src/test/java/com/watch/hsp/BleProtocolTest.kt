@@ -115,6 +115,25 @@ class BleProtocolTest {
         assertEquals(CRC32().apply { update(jpeg) }.value, readUInt32Le(begin, 7))
     }
 
+    @Test
+    fun coverPacketsUseNegotiatedMtuWithoutExceedingWatchLimit() {
+        val jpeg = ByteArray(4_321) { index -> (index * 31).toByte() }.apply {
+            this[0] = 0xff.toByte()
+            this[1] = 0xd8.toByte()
+            this[lastIndex - 1] = 0xff.toByte()
+            this[lastIndex] = 0xd9.toByte()
+        }
+
+        val packets = BleProtocol.buildCoverSyncPackets(
+            generation = 77,
+            jpeg = jpeg,
+            packetLimit = BleProtocol.MAX_SYNC_PACKET_BYTES
+        )
+
+        assertTrue(packets.all { packet -> packet.size <= BleProtocol.MAX_SYNC_PACKET_BYTES })
+        assertEquals(1 + ((jpeg.size + 236) / 237), packets.size)
+    }
+
     private fun readUInt16Le(packet: ByteArray, offset: Int): Int =
         (packet[offset].toInt() and 0xff) or
             ((packet[offset + 1].toInt() and 0xff) shl 8)
