@@ -1,8 +1,8 @@
 # HSP Watch
 
-HSP Watch 是一个运行在 Android 手机端的 BLE 手表伴侣 App，用于连接 HSP 手表，实现手机与手表互相查找、手表状态展示，以及手机时间、位置、城市和天气向手表的一次性同步。
+HSP Watch 是一个运行在 Android 手机端的 BLE 手表伴侣 App，用于连接 HSP 手表，实现手机与手表互相查找、手表状态展示，以及手机时间、位置、城市和天气向手表的一次性同步。Android 端采用五标签 Compose 界面：首页、设备、同步、通知和更多。
 
-> 当前仓库只包含 Android App，不包含 LVGL/SquareLine 手表 UI 或手表固件。`BleServerService` 虽然沿用了 Server 命名，实际实现的是 Android BLE GATT Client。
+> 当前仓库包含 Android App 和 `design/` 下的静态网页设计原型，不包含 LVGL/SquareLine 手表 UI 或手表固件。`BleServerService` 虽然沿用了 Server 命名，实际实现的是 Android BLE GATT Client。
 
 ## 功能概览
 
@@ -13,6 +13,7 @@ HSP Watch 是一个运行在 Android 手机端的 BLE 手表伴侣 App，用于�
 - 接收并展示手表电量、充电状态、步数、卡路里、距离和固件版本
 - 连接成功后自动同步手机时间，并在获得定位授权后同步位置、城市和天气
 - 支持用户手动触发一次手机数据同步
+- 读取短信、微信、QQ/TIM 通知，缓存最近 5 条，并在连接恢复后补发
 - 展示权限、蓝牙、扫描、连接、协议和通知通道状态
 - 适配 Android 12+ 蓝牙权限、Android 13+ 通知权限和定位运行时权限
 
@@ -34,7 +35,7 @@ HSP Watch 是一个运行在 Android 手机端的 BLE 手表伴侣 App，用于�
 用户操作
    |
    v
-MainActivity + Compose 单页面 UI
+MainActivity + Compose 五标签 UI
    |  Intent action                 ^  StateFlow
    v                                |
 BleServerService ----------------> BleServerStatus
@@ -60,11 +61,11 @@ App 没有自建主循环、常驻周期轮询或 WorkManager。持续运行由 
 3. 在 Activity 位于前台时监听蓝牙开关变化。
 4. 将授权、开启蓝牙、启动/停止服务、查找和手机数据同步操作注入 UI。
 
-首次打开 App 只检查和展示状态，不会自动启动 BLE 服务。用户点击“启动服务”“查找手表”或“同步手机数据”后才会建立连接。
+首次打开 App 只检查和展示状态，不会自动启动 BLE 服务。用户打开“设备”页的后台连接服务，或在首页点击“查找手表”、在“同步”页点击“立即同步”后，才会建立连接。
 
 ### 2. 启动前台服务
 
-“启动服务”“查找手表”和“同步手机数据”都会通过 Intent action 启动 `BleServerService`：
+设备页的后台连接服务、首页的查找操作和同步页的立即同步都会通过 Intent action 启动 `BleServerService`：
 
 ```text
 Compose 按钮
@@ -205,20 +206,21 @@ Android 同一时刻只允许一个未完成的 GATT write，因此时间、位�
 
 ## UI 与状态管理
 
-运行时只有一个 `HspWatchScreen`，没有 Fragment、`NavHost` 或页面返回栈。页面主要包括：
+运行时只有一个 `HspWatchScreen`，不使用 Fragment、`NavHost` 或页面返回栈。界面通过可保存的 Compose 标签状态切换五个页面；顶部状态栏和底部五栏导航始终保留，页面内容独立滚动。
 
-- 连接状态摘要
-- 手表状态卡
-- “查找手表”或“停止手机响铃”主操作按钮
-- 手机时间、位置和天气同步按钮
-- 蓝牙、定位、通知权限和蓝牙开关提示
-- 启动/停止服务按钮
-- 最近状态消息
-- 可展开的扫描、连接、查找、状态和手机同步通道调试状态
+| 页面 | 展示内容 | 真实操作与数据来源 |
+| --- | --- | --- |
+| 首页 | 连接状态、手表电量/固件、今日步数/卡路里/距离 | “查找手表”；手表发起查找时改为“停止手机响铃”。运动和设备数据仅来自 `DEVICE_STATUS` Notify。 |
+| 设备 | 后台连接服务、BLE 地址、设备状态和同步通道 | 服务开关对应 `BleServerService.start()` / `stop()`。 |
+| 同步 | 时间、位置、城市、天气、歌词和封面的可用状态 | “立即同步”对应 `BleServerService.syncPhoneData()`。 |
+| 通知 | 通知读取授权、支持来源、最近 3 条缓存 | “管理通知读取”打开 Android 通知使用权设置；消息来自 `WatchNotificationRepository`，仓库最多保存 5 条。 |
+| 更多 | 手机蓝牙、所需权限、本地数据和 BLE 诊断 | 检查权限、按需开启蓝牙，以及展开前台服务、扫描、GATT 和通道诊断。 |
 
-`BleServerStatus` 是进程内 `MutableStateFlow`，负责在 Service 和 Compose 之间传递状态。进程重启后，连接状态和最近一次设备状态会丢失，只有 `SharedPreferences` 中的 BLE 地址能够恢复。
+界面使用固定的浅灰白底色、深青主色、细边框和紧凑状态行；不改变 BLE 协议、服务生命周期或权限模型。`BleServerStatus` 是进程内 `MutableStateFlow`，负责在 Service 和 Compose 之间传递状态。进程重启后，连接状态和最近一次设备状态会丢失，只有 `SharedPreferences` 中的 BLE 地址和通知仓库中的消息能够恢复。
 
 `HspWatchPreview.kt` 中的电量、步数等数据只用于 Android Studio Compose Preview，不会进入正式运行流程。
+
+网页设计原型的预览方式和页面说明见 [`design/README.md`](design/README.md)。
 
 ## 项目结构
 
@@ -235,12 +237,15 @@ Android 同一时刻只允许一个未完成的 GATT write，因此时间、位�
 │       │       ├── BleServerStatus.kt              # UI StateFlow 和设备状态模型
 │       │       ├── BleProtocol.kt                  # UUID、查找/同步包和状态包解析
 │       │       ├── data/WatchPreferences.kt        # 手表 BLE 地址缓存
+│       │       ├── data/WatchNotificationRepository.kt # 通知消息缓存
 │       │       ├── service/PhoneAlertController.kt # 手机铃声、振动和 WakeLock
+│       │       ├── service/MediaLyricsMonitor.kt   # 歌词和封面同步监控
 │       │       └── ui/
-│       │           ├── HspWatchScreen.kt           # 单页面 Compose UI
+│       │           ├── HspWatchScreen.kt           # 五标签 Compose UI 与自绘图标
 │       │           └── HspWatchPreview.kt          # Android Studio 预览数据
 │       └── test/java/com/watch/hsp/
 │           └── BleProtocolTest.kt              # 城市同步包单元测试
+├── design/                                        # 离线网页设计原型
 ├── build.gradle.kts
 ├── gradle/libs.versions.toml
 └── settings.gradle.kts
@@ -408,7 +413,7 @@ BLE 扫描、GATT 连接、铃声和振动需要真机验证，模拟器通常�
 2. 将 App 安装到支持 BLE 的 Android 手机。
 3. 启动 HSP 手表，并确保手表正在广播 HSP Service UUID。
 4. 首次启动 App 后，根据页面提示授予权限并开启蓝牙。定位权限是位置/城市/天气同步的可选条件。
-5. 点击“启动服务”等待连接，或直接点击“启动并查找手表”。
+5. 打开“设备”页并启用“后台连接服务”等待连接，或直接在首页点击“启动并查找手表”。
 6. 连接摘要显示“手表已连接”后，即可测试双向查找、手表状态和手机数据同步。
 
 ## 构建与测试

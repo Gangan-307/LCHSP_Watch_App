@@ -664,7 +664,7 @@ class BleServerService : Service() {
         val started = try {
             gatt.requestMtu(REQUESTED_BLE_MTU)
         } catch (exception: SecurityException) {
-            setError("蓝牙连接权限已被撤销")
+            handleLinkFailure("蓝牙连接权限已被撤销", scanImmediately = false)
             return
         } catch (exception: IllegalStateException) {
             Log.w(TAG, "Unable to request BLE MTU", exception)
