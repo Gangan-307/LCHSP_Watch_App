@@ -81,6 +81,7 @@ private fun HspWatchPreview(state: BleUiState, showDebugDetails: Boolean = false
             onFindWatch = {},
             onSyncPhoneData = {},
             onOpenNotificationAccess = {},
+            onClearNotifications = {},
             onStopRinging = {},
             showDebugDetailsInitially = showDebugDetails
         )

@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import com.watch.hsp.data.WatchNotificationRepository
 import com.watch.hsp.ui.HspWatchScreen
 import com.watch.hsp.ui.theme.HspTheme
 
@@ -93,6 +94,7 @@ private fun HspWatchApp() {
         onOpenNotificationAccess = {
             context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         },
+        onClearNotifications = { WatchNotificationRepository.clear(context) },
         onStopRinging = { BleServerService.stopRinging(context) }
     )
 }

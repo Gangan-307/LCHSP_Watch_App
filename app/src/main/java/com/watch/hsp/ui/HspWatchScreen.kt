@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -31,6 +32,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -107,13 +109,17 @@ fun HspWatchScreen(
     onFindWatch: () -> Unit,
     onSyncPhoneData: () -> Unit,
     onOpenNotificationAccess: () -> Unit,
+    onClearNotifications: () -> Unit,
     onStopRinging: () -> Unit,
     showDebugDetailsInitially: Boolean = false
 ) {
     var selectedPage by rememberSaveable { mutableStateOf(HspPage.Home) }
     var showDebugDetails by rememberSaveable { mutableStateOf(showDebugDetailsInitially) }
+    var notificationRevision by rememberSaveable { mutableStateOf(0) }
     val context = LocalContext.current
-    val cachedMessages = WatchNotificationRepository.snapshot(context).takeLast(3).asReversed()
+    val cachedMessages = notificationRevision.let {
+        WatchNotificationRepository.snapshot(context).takeLast(3).asReversed()
+    }
 
     Scaffold(
         containerColor = AppCanvas,
@@ -150,7 +156,11 @@ fun HspWatchScreen(
                 HspPage.Notifications -> NotificationsPage(
                     state = state,
                     messages = cachedMessages,
-                    onOpenNotificationAccess = onOpenNotificationAccess
+                    onOpenNotificationAccess = onOpenNotificationAccess,
+                    onClearMessages = {
+                        onClearNotifications()
+                        notificationRevision += 1
+                    }
                 )
 
                 HspPage.More -> MorePage(
@@ -599,8 +609,34 @@ private fun SyncPage(state: BleUiState, onSyncPhoneData: () -> Unit) {
 private fun NotificationsPage(
     state: BleUiState,
     messages: List<PhoneNotification>,
-    onOpenNotificationAccess: () -> Unit
+    onOpenNotificationAccess: () -> Unit,
+    onClearMessages: () -> Unit
 ) {
+    var showClearConfirmation by rememberSaveable { mutableStateOf(false) }
+
+    if (showClearConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmation = false },
+            title = { Text("清除消息缓存") },
+            text = { Text("这只会清除手机端缓存，不影响通知读取、手表连接或已经发送的消息。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onClearMessages()
+                        showClearConfirmation = false
+                    }
+                ) {
+                    Text("清除", color = AppRed)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirmation = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     PageColumn {
         ScreenTitle("消息通知", "新消息会自动发送到手表。")
         Surface(
@@ -632,7 +668,30 @@ private fun NotificationsPage(
         }
 
         Spacer(Modifier.height(28.dp))
-        SectionHeader("最近缓存", "最多 5 条")
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "最近缓存",
+                modifier = Modifier.weight(1f),
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = AppText
+            )
+            if (messages.isNotEmpty()) {
+                Text(
+                    "清除",
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { showClearConfirmation = true }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = AppRed
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text("最多 5 条", fontSize = 12.sp, color = AppMuted)
+        }
+        Spacer(Modifier.height(12.dp))
         if (messages.isEmpty()) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),

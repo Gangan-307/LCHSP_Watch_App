@@ -213,7 +213,7 @@ Android 同一时刻只允许一个未完成的 GATT write，因此时间、位�
 | 首页 | 连接状态、手表电量/固件、今日步数/卡路里/距离 | “查找手表”；手表发起查找时改为“停止手机响铃”。运动和设备数据仅来自 `DEVICE_STATUS` Notify。 |
 | 设备 | 后台连接服务、BLE 地址、设备状态和同步通道 | 服务开关对应 `BleServerService.start()` / `stop()`。 |
 | 同步 | 时间、位置、城市、天气、歌词和封面的可用状态 | “立即同步”对应 `BleServerService.syncPhoneData()`。 |
-| 通知 | 通知读取授权、支持来源、最近 3 条缓存 | “管理通知读取”打开 Android 通知使用权设置；消息来自 `WatchNotificationRepository`，仓库最多保存 5 条。 |
+| 通知 | 通知读取授权、支持来源、最近 3 条缓存 | “管理通知读取”打开 Android 通知使用权设置；可手动清除手机端缓存。消息来自 `WatchNotificationRepository`，仓库最多保存 5 条。 |
 | 更多 | 手机蓝牙、所需权限、本地数据和 BLE 诊断 | 检查权限、按需开启蓝牙，以及展开前台服务、扫描、GATT 和通道诊断。 |
 
 界面使用固定的浅灰白底色、深青主色、细边框和紧凑状态行；不改变 BLE 协议、服务生命周期或权限模型。`BleServerStatus` 是进程内 `MutableStateFlow`，负责在 Service 和 Compose 之间传递状态。进程重启后，连接状态和最近一次设备状态会丢失，只有 `SharedPreferences` 中的 BLE 地址和通知仓库中的消息能够恢复。
