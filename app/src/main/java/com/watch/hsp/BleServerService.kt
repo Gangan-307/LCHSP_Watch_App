@@ -754,8 +754,38 @@ class BleServerService : Service() {
                 WatchNotificationRepository.remove(this, id)
                 Log.i(TAG, "Watch deleted cached notification id=$id")
             }
+            BleProtocol.PHONE_COMMAND_CAMERA_CAPTURE -> handleRemoteCameraCapture()
             else -> Log.w(TAG, "Ignored unknown watch state: 0x%02X".format(packet[0].toInt() and 0xff))
         }
+    }
+
+    private fun handleRemoteCameraCapture() {
+        if (RemoteCameraController.requestCapture()) {
+            BleServerStatus.update { it.copy(lastMessage = "已执行手表遥控拍照") }
+            Log.i(TAG, "Remote camera shutter accepted")
+            return
+        }
+
+        val openCamera = PendingIntent.getActivity(
+            this,
+            RemoteCameraActivity.REMOTE_CAMERA_NOTIFICATION_ID,
+            Intent(this, RemoteCameraActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_hsp)
+            .setContentTitle("手表请求拍照")
+            .setContentText("打开遥控相机后，再按一次手表快门")
+            .setContentIntent(openCamera)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java)?.notify(
+            RemoteCameraActivity.REMOTE_CAMERA_NOTIFICATION_ID,
+            notification
+        )
+        BleServerStatus.update { it.copy(lastMessage = "请先打开手机遥控相机") }
+        Log.i(TAG, "Remote camera shutter ignored because camera view is closed")
     }
 
     private fun handleDeviceStatus(packet: ByteArray) {

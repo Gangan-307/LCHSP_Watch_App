@@ -96,7 +96,7 @@ private enum class HspPage(val label: String, val icon: AppIcon) {
 
 private enum class AppIcon {
     Home, Watch, Sync, Bell, Sliders, Bluetooth, Radio, Clock, Pin, Cloud,
-    Music, Shield, Database, Bug, Locate
+    Music, Shield, Database, Bug, Locate, Camera
 }
 
 @Composable
@@ -108,6 +108,7 @@ fun HspWatchScreen(
     onStopService: () -> Unit,
     onFindWatch: () -> Unit,
     onSyncPhoneData: () -> Unit,
+    onOpenRemoteCamera: () -> Unit,
     onOpenNotificationAccess: () -> Unit,
     onClearNotifications: () -> Unit,
     onStopRinging: () -> Unit,
@@ -148,7 +149,8 @@ fun HspWatchScreen(
                 HspPage.Device -> DevicePage(
                     state = state,
                     onStartService = onStartService,
-                    onStopService = onStopService
+                    onStopService = onStopService,
+                    onOpenRemoteCamera = onOpenRemoteCamera
                 )
 
                 HspPage.Sync -> SyncPage(state = state, onSyncPhoneData = onSyncPhoneData)
@@ -428,7 +430,12 @@ private fun VerticalRule() {
 }
 
 @Composable
-private fun DevicePage(state: BleUiState, onStartService: () -> Unit, onStopService: () -> Unit) {
+private fun DevicePage(
+    state: BleUiState,
+    onStartService: () -> Unit,
+    onStopService: () -> Unit,
+    onOpenRemoteCamera: () -> Unit
+) {
     val canStartService = state.hasBleHardware && state.bluetoothEnabled && state.blePermissionsGranted
     val serviceEnabled = state.serviceRunning
     val battery = state.watchStatus.batteryPercent?.let { "$it%" } ?: "--"
@@ -470,6 +477,10 @@ private fun DevicePage(state: BleUiState, onStartService: () -> Unit, onStopServ
                 )
             }
         }
+
+        Spacer(Modifier.height(12.dp))
+        PrimaryButton("打开遥控相机", AppIcon.Camera, true,
+            onClick = onOpenRemoteCamera)
 
         Spacer(Modifier.height(28.dp))
         SectionHeader("设备信息", if (state.connected) "已连接" else "未连接", if (state.connected) AppGreen else AppMuted)
@@ -1132,6 +1143,12 @@ private fun AppLineIcon(icon: AppIcon, color: Color, modifier: Modifier = Modifi
             AppIcon.Locate -> {
                 drawCircle(color, radius = w * .28f, center = point(.5f, .5f), style = stroke); drawCircle(color, radius = w * .08f, center = point(.5f, .5f), style = stroke)
                 line(.5f, .05f, .5f, .20f); line(.5f, .80f, .5f, .95f); line(.05f, .5f, .20f, .5f); line(.80f, .5f, .95f, .5f)
+            }
+            AppIcon.Camera -> {
+                drawRoundRect(color, point(.12f, .27f), Size(w * .76f, h * .55f), CornerRadius(w * .10f), style = stroke)
+                drawCircle(color, radius = w * .18f, center = point(.5f, .54f), style = stroke)
+                val top = Path().apply { moveTo(w * .30f, h * .27f); lineTo(w * .38f, h * .15f); lineTo(w * .62f, h * .15f); lineTo(w * .70f, h * .27f) }
+                drawPath(top, color, style = stroke)
             }
         }
     }

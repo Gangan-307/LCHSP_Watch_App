@@ -31,6 +31,7 @@ object BleProtocol {
     const val PHONE_COMMAND_FIND_STOP: Byte = 0x02
     const val PHONE_COMMAND_NOTIFICATION_CLEAR: Byte = 0x03
     const val PHONE_COMMAND_NOTIFICATION_DELETE: Byte = 0x04
+    const val PHONE_COMMAND_CAMERA_CAPTURE: Byte = 0x05
 
     /** CONTROL writes: ask the watch to start or stop vibrating. */
     const val WATCH_COMMAND_FIND_START: Byte = 0x11

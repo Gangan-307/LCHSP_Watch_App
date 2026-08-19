@@ -91,6 +91,9 @@ private fun HspWatchApp() {
         onStopService = { BleServerService.stop(context) },
         onFindWatch = { BleServerService.findWatch(context) },
         onSyncPhoneData = { BleServerService.syncPhoneData(context) },
+        onOpenRemoteCamera = {
+            context.startActivity(Intent(context, RemoteCameraActivity::class.java))
+        },
         onOpenNotificationAccess = {
             context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         },
