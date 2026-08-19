@@ -31,7 +31,7 @@ object BleProtocol {
     const val PHONE_COMMAND_FIND_STOP: Byte = 0x02
     const val PHONE_COMMAND_NOTIFICATION_CLEAR: Byte = 0x03
     const val PHONE_COMMAND_NOTIFICATION_DELETE: Byte = 0x04
-    const val PHONE_COMMAND_CAMERA_CAPTURE: Byte = 0x05
+    const val PHONE_COMMAND_PHOTO_REQUEST: Byte = 0x05
 
     /** CONTROL writes: ask the watch to start or stop vibrating. */
     const val WATCH_COMMAND_FIND_START: Byte = 0x11
@@ -47,6 +47,13 @@ object BleProtocol {
     const val SYNC_COMMAND_LYRIC_DATA: Byte = 0x42
     const val SYNC_COMMAND_COVER_BEGIN: Byte = 0x43
     const val SYNC_COMMAND_COVER_DATA: Byte = 0x44
+    const val SYNC_COMMAND_PHOTO_BEGIN: Byte = 0x45
+    const val SYNC_COMMAND_PHOTO_DATA: Byte = 0x46
+    const val SYNC_COMMAND_PHOTO_STATUS: Byte = 0x47
+
+    const val PHOTO_STATUS_PERMISSION_REQUIRED: Byte = 0x01
+    const val PHOTO_STATUS_NOT_FOUND: Byte = 0x02
+    const val PHOTO_STATUS_ERROR: Byte = 0x03
 
     const val NOTIFICATION_APP_SMS = 1
     const val NOTIFICATION_APP_WECHAT = 2
@@ -68,6 +75,7 @@ object BleProtocol {
     private const val COVER_BEGIN_LENGTH = 11
     private const val COVER_DATA_HEADER_LENGTH = 7
     const val COVER_MAX_BYTES = 8 * 1024
+    const val PHOTO_MAX_BYTES = 16 * 1024
 
     fun packet(command: Byte, sequence: Byte): ByteArray = byteArrayOf(command, sequence)
 
@@ -256,6 +264,49 @@ object BleProtocol {
             offset += length
         }
         return packets
+    }
+
+    fun buildPhotoSyncPackets(
+        generation: Int,
+        jpeg: ByteArray,
+        packetLimit: Int = DEFAULT_SYNC_PACKET_BYTES
+    ): List<ByteArray> {
+        require(generation in 1..0xffff)
+        require(jpeg.size in 4..PHOTO_MAX_BYTES)
+        require(jpeg[0] == 0xff.toByte() && jpeg[1] == 0xd8.toByte())
+        val safePacketLimit = packetLimit.coerceIn(
+            DEFAULT_SYNC_PACKET_BYTES,
+            MAX_SYNC_PACKET_BYTES
+        )
+        val packets = ArrayList<ByteArray>()
+        val begin = ByteArray(COVER_BEGIN_LENGTH)
+        begin[0] = SYNC_COMMAND_PHOTO_BEGIN
+        writeUInt16Le(begin, 1, generation)
+        writeUInt32Le(begin, 3, jpeg.size.toLong())
+        writeUInt32Le(begin, 7, CRC32().apply { update(jpeg) }.value)
+        packets += begin
+
+        var offset = 0
+        while (offset < jpeg.size) {
+            val length = minOf(
+                safePacketLimit - COVER_DATA_HEADER_LENGTH,
+                jpeg.size - offset
+            )
+            val data = ByteArray(COVER_DATA_HEADER_LENGTH + length)
+            data[0] = SYNC_COMMAND_PHOTO_DATA
+            writeUInt16Le(data, 1, generation)
+            writeUInt32Le(data, 3, offset.toLong())
+            jpeg.copyInto(data, COVER_DATA_HEADER_LENGTH, offset, offset + length)
+            packets += data
+            offset += length
+        }
+        return packets
+    }
+
+    fun buildPhotoStatusPacket(status: Byte): ByteArray {
+        require(status == PHOTO_STATUS_PERMISSION_REQUIRED ||
+            status == PHOTO_STATUS_NOT_FOUND || status == PHOTO_STATUS_ERROR)
+        return byteArrayOf(SYNC_COMMAND_PHOTO_STATUS, status)
     }
 
     /**

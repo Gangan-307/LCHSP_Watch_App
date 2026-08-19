@@ -96,7 +96,7 @@ private enum class HspPage(val label: String, val icon: AppIcon) {
 
 private enum class AppIcon {
     Home, Watch, Sync, Bell, Sliders, Bluetooth, Radio, Clock, Pin, Cloud,
-    Music, Shield, Database, Bug, Locate, Camera
+    Music, Shield, Database, Bug, Locate
 }
 
 @Composable
@@ -108,7 +108,6 @@ fun HspWatchScreen(
     onStopService: () -> Unit,
     onFindWatch: () -> Unit,
     onSyncPhoneData: () -> Unit,
-    onOpenRemoteCamera: () -> Unit,
     onOpenNotificationAccess: () -> Unit,
     onClearNotifications: () -> Unit,
     onStopRinging: () -> Unit,
@@ -149,8 +148,7 @@ fun HspWatchScreen(
                 HspPage.Device -> DevicePage(
                     state = state,
                     onStartService = onStartService,
-                    onStopService = onStopService,
-                    onOpenRemoteCamera = onOpenRemoteCamera
+                    onStopService = onStopService
                 )
 
                 HspPage.Sync -> SyncPage(state = state, onSyncPhoneData = onSyncPhoneData)
@@ -285,7 +283,8 @@ private fun HomePage(
     PageColumn {
         ScreenTitle("今日概览", "你的 HSP Watch 已准备就绪。")
 
-        if (!state.blePermissionsGranted || !state.notificationsGranted || !state.locationPermissionGranted) {
+        if (!state.blePermissionsGranted || !state.notificationsGranted ||
+            !state.locationPermissionGranted || !state.photoLibraryPermissionGranted) {
             CompactNotice(
                 icon = AppIcon.Shield,
                 title = "还需要完成授权",
@@ -433,8 +432,7 @@ private fun VerticalRule() {
 private fun DevicePage(
     state: BleUiState,
     onStartService: () -> Unit,
-    onStopService: () -> Unit,
-    onOpenRemoteCamera: () -> Unit
+    onStopService: () -> Unit
 ) {
     val canStartService = state.hasBleHardware && state.bluetoothEnabled && state.blePermissionsGranted
     val serviceEnabled = state.serviceRunning
@@ -477,10 +475,6 @@ private fun DevicePage(
                 )
             }
         }
-
-        Spacer(Modifier.height(12.dp))
-        PrimaryButton("打开遥控相机", AppIcon.Camera, true,
-            onClick = onOpenRemoteCamera)
 
         Spacer(Modifier.height(28.dp))
         SectionHeader("设备信息", if (state.connected) "已连接" else "未连接", if (state.connected) AppGreen else AppMuted)
@@ -733,7 +727,10 @@ private fun MorePage(
     onRequestPermissions: () -> Unit,
     onEnableBluetooth: () -> Unit
 ) {
-    val permissionsReady = state.blePermissionsGranted && state.locationPermissionGranted && state.notificationsGranted
+    val permissionsReady = state.blePermissionsGranted &&
+        state.locationPermissionGranted &&
+        state.notificationsGranted &&
+        state.photoLibraryPermissionGranted
     PageColumn {
         ScreenTitle("更多", "系统权限与连接诊断。")
         SectionHeader("系统状态", if (permissionsReady && state.bluetoothEnabled) "运行正常" else "需要处理")
@@ -752,7 +749,7 @@ private fun MorePage(
                 iconBackground = AppGreenSoft,
                 iconColor = AppGreen,
                 title = "所需权限",
-                subtitle = "蓝牙、位置与通知权限",
+                subtitle = "蓝牙、位置、通知与照片权限",
                 value = if (permissionsReady) "已允许" else "需授权",
                 valueColor = if (permissionsReady) AppGreen else AppAmber
             )
@@ -1144,12 +1141,6 @@ private fun AppLineIcon(icon: AppIcon, color: Color, modifier: Modifier = Modifi
                 drawCircle(color, radius = w * .28f, center = point(.5f, .5f), style = stroke); drawCircle(color, radius = w * .08f, center = point(.5f, .5f), style = stroke)
                 line(.5f, .05f, .5f, .20f); line(.5f, .80f, .5f, .95f); line(.05f, .5f, .20f, .5f); line(.80f, .5f, .95f, .5f)
             }
-            AppIcon.Camera -> {
-                drawRoundRect(color, point(.12f, .27f), Size(w * .76f, h * .55f), CornerRadius(w * .10f), style = stroke)
-                drawCircle(color, radius = w * .18f, center = point(.5f, .54f), style = stroke)
-                val top = Path().apply { moveTo(w * .30f, h * .27f); lineTo(w * .38f, h * .15f); lineTo(w * .62f, h * .15f); lineTo(w * .70f, h * .27f) }
-                drawPath(top, color, style = stroke)
-            }
         }
     }
 }
@@ -1159,8 +1150,9 @@ private fun permissionNoticeText(state: BleUiState): String {
         if (!state.blePermissionsGranted) add("蓝牙权限")
         if (!state.locationPermissionGranted) add("定位权限")
         if (!state.notificationsGranted) add("通知权限")
+        if (!state.photoLibraryPermissionGranted) add("照片权限")
     }
-    return "还需要${missing.joinToString("、")}，用于连接手表及同步位置和天气。"
+    return "还需要${missing.joinToString("、")}，用于连接手表、同步位置天气及预览最新照片。"
 }
 
 private fun scanStatusText(state: BleUiState): String = when {

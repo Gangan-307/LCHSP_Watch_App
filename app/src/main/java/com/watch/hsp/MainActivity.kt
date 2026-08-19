@@ -66,7 +66,7 @@ private fun HspWatchApp() {
         BleServerStatus.refreshPrerequisites(context)
         if (result.values.any { !it }) {
             BleServerStatus.update {
-                it.copy(lastMessage = "部分权限被拒绝，定位和天气同步可能不可用")
+                it.copy(lastMessage = "部分权限被拒绝，位置、天气或照片预览可能不可用")
             }
         }
     }
@@ -91,9 +91,6 @@ private fun HspWatchApp() {
         onStopService = { BleServerService.stop(context) },
         onFindWatch = { BleServerService.findWatch(context) },
         onSyncPhoneData = { BleServerService.syncPhoneData(context) },
-        onOpenRemoteCamera = {
-            context.startActivity(Intent(context, RemoteCameraActivity::class.java))
-        },
         onOpenNotificationAccess = {
             context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         },
@@ -103,21 +100,32 @@ private fun HspWatchApp() {
 }
 
 private fun requiredRuntimePermissions(): Array<String> = when {
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> arrayOf(
+        Manifest.permission.BLUETOOTH_SCAN,
+        Manifest.permission.BLUETOOTH_CONNECT,
+        Manifest.permission.POST_NOTIFICATIONS,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+        Manifest.permission.READ_MEDIA_IMAGES
+    )
     Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
         Manifest.permission.BLUETOOTH_SCAN,
         Manifest.permission.BLUETOOTH_CONNECT,
         Manifest.permission.POST_NOTIFICATIONS,
         Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+        Manifest.permission.READ_MEDIA_IMAGES
     )
     Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> arrayOf(
         Manifest.permission.BLUETOOTH_SCAN,
         Manifest.permission.BLUETOOTH_CONNECT,
         Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+        Manifest.permission.READ_EXTERNAL_STORAGE
     )
     else -> arrayOf(
         Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+        Manifest.permission.READ_EXTERNAL_STORAGE
     )
 }

@@ -24,8 +24,16 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.ContentUris
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.ImageDecoder
+import android.graphics.Paint
+import android.graphics.Rect
 import android.icu.text.Transliterator
 import android.location.Address
 import android.location.Geocoder
@@ -39,6 +47,7 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.MediaStore
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.watch.hsp.data.WatchPreferences
@@ -46,6 +55,7 @@ import com.watch.hsp.data.PhoneNotification
 import com.watch.hsp.data.WatchNotificationRepository
 import com.watch.hsp.service.MediaLyricsMonitor
 import com.watch.hsp.service.PhoneAlertController
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
@@ -93,7 +103,10 @@ class BleServerService : Service() {
         private const val SYNC_WRITE_START_RETRY_DELAY_MS = 40L
         private const val SYNC_WRITE_START_RETRY_LIMIT = 8
         private const val COVER_BATCH_RETRY_DELAY_MS = 1_500L
+        private const val PHOTO_LIBRARY_SETTLE_MS = 700L
         private const val COVER_BATCH_RETRY_LIMIT = 3
+        /* LVGL's normal-JPEG decoder needs width * height * 3 bytes at once. */
+        private const val PHOTO_EDGE_PX = 160
 
         fun start(context: Context) = sendForegroundCommand(context, ACTION_START)
 
@@ -161,6 +174,8 @@ class BleServerService : Service() {
     private var connectingFromCachedAddress = false
     private var pendingFindWatch = false
     private var pendingPhoneSync = false
+    @Volatile private var photoRequestInFlight = false
+    private var photoGeneration = 0
     private var watchSequence: Byte = 0
     private var syncPacketMaxBytes = BleProtocol.DEFAULT_SYNC_PACKET_BYTES
     private var mtuNegotiationPending = false
@@ -754,38 +769,158 @@ class BleServerService : Service() {
                 WatchNotificationRepository.remove(this, id)
                 Log.i(TAG, "Watch deleted cached notification id=$id")
             }
-            BleProtocol.PHONE_COMMAND_CAMERA_CAPTURE -> handleRemoteCameraCapture()
+            BleProtocol.PHONE_COMMAND_PHOTO_REQUEST -> requestLatestPhoto()
             else -> Log.w(TAG, "Ignored unknown watch state: 0x%02X".format(packet[0].toInt() and 0xff))
         }
     }
 
-    private fun handleRemoteCameraCapture() {
-        if (RemoteCameraController.requestCapture()) {
-            BleServerStatus.update { it.copy(lastMessage = "已执行手表遥控拍照") }
-            Log.i(TAG, "Remote camera shutter accepted")
+    private fun requestLatestPhoto() {
+        if (photoRequestInFlight) return
+        if (!hasPhotoLibraryPermission()) {
+            enqueuePhotoStatus(BleProtocol.PHOTO_STATUS_PERMISSION_REQUIRED)
+            BleServerStatus.update { it.copy(lastMessage = "请授予完整照片读取权限") }
             return
         }
 
-        val openCamera = PendingIntent.getActivity(
-            this,
-            RemoteCameraActivity.REMOTE_CAMERA_NOTIFICATION_ID,
-            Intent(this, RemoteCameraActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        photoRequestInFlight = true
+        Thread({
+            SystemClock.sleep(PHOTO_LIBRARY_SETTLE_MS)
+            val result = runCatching { readLatestPhotoJpeg() }
+            result.exceptionOrNull()?.let {
+                Log.w(TAG, "Unable to prepare latest phone photo", it)
+            }
+            handler.post {
+                photoRequestInFlight = false
+                val jpeg = result.getOrNull()
+                if (result.isFailure) {
+                    enqueuePhotoStatus(BleProtocol.PHOTO_STATUS_ERROR)
+                    BleServerStatus.update { it.copy(lastMessage = "读取手机照片失败") }
+                } else if (jpeg == null) {
+                    enqueuePhotoStatus(BleProtocol.PHOTO_STATUS_NOT_FOUND)
+                    BleServerStatus.update { it.copy(lastMessage = "没有找到可发送的手机照片") }
+                } else {
+                    photoGeneration = (photoGeneration % 0xffff) + 1
+                    val packets = BleProtocol.buildPhotoSyncPackets(
+                        photoGeneration, jpeg, syncPacketMaxBytes
+                    )
+                    enqueueSyncPackets(
+                        packets = packets,
+                        priority = true,
+                        replaceCommands = setOf(
+                            BleProtocol.SYNC_COMMAND_PHOTO_BEGIN,
+                            BleProtocol.SYNC_COMMAND_PHOTO_DATA,
+                            BleProtocol.SYNC_COMMAND_PHOTO_STATUS
+                        )
+                    )
+                    BleServerStatus.update {
+                        it.copy(lastMessage = "正在向手表发送最新照片")
+                    }
+                }
+            }
+        }, "hsp-photo").start()
+    }
+
+    private fun enqueuePhotoStatus(status: Byte) {
+        handler.post {
+            enqueueSyncPackets(
+                packets = listOf(BleProtocol.buildPhotoStatusPacket(status)),
+                priority = true,
+                replaceCommands = setOf(
+                    BleProtocol.SYNC_COMMAND_PHOTO_BEGIN,
+                    BleProtocol.SYNC_COMMAND_PHOTO_DATA,
+                    BleProtocol.SYNC_COMMAND_PHOTO_STATUS
+                )
+            )
+        }
+    }
+
+    private fun hasPhotoLibraryPermission(): Boolean = if (
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    ) {
+        ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) ==
+            PackageManager.PERMISSION_GRANTED
+    } else {
+        ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun readLatestPhotoJpeg(): ByteArray? {
+        val uri = contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Images.Media._ID),
+            null,
+            null,
+            "${MediaStore.Images.Media.DATE_TAKEN} DESC, " +
+                "${MediaStore.Images.Media.DATE_ADDED} DESC"
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) null else ContentUris.withAppendedId(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                cursor.getLong(0)
+            )
+        } ?: return null
+
+        val source = decodePhoto(uri) ?: return null
+        val scale = minOf(
+            1f,
+            PHOTO_EDGE_PX.toFloat() / source.width,
+            PHOTO_EDGE_PX.toFloat() / source.height
         )
-        val notification = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_hsp)
-            .setContentTitle("手表请求拍照")
-            .setContentText("打开遥控相机后，再按一次手表快门")
-            .setContentIntent(openCamera)
-            .setAutoCancel(true)
-            .build()
-        getSystemService(NotificationManager::class.java)?.notify(
-            RemoteCameraActivity.REMOTE_CAMERA_NOTIFICATION_ID,
-            notification
-        )
-        BleServerStatus.update { it.copy(lastMessage = "请先打开手机遥控相机") }
-        Log.i(TAG, "Remote camera shutter ignored because camera view is closed")
+        val width = (source.width * scale).toInt().coerceAtLeast(1)
+        val height = (source.height * scale).toInt().coerceAtLeast(1)
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
+        Canvas(output).apply {
+            drawColor(Color.BLACK)
+            drawBitmap(
+                source,
+                Rect(0, 0, source.width, source.height),
+                Rect(0, 0, width, height),
+                Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            )
+        }
+
+        var quality = 78
+        var jpeg: ByteArray
+        do {
+            jpeg = ByteArrayOutputStream().use { stream ->
+                output.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+                stream.toByteArray()
+            }
+            quality -= 8
+        } while (jpeg.size > BleProtocol.PHOTO_MAX_BYTES && quality >= 30)
+        output.recycle()
+        source.recycle()
+        return jpeg.takeIf { it.size <= BleProtocol.PHOTO_MAX_BYTES }
+    }
+
+    private fun decodePhoto(uri: android.net.Uri): Bitmap? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) {
+                    decoder, info, _ ->
+                val scale = minOf(
+                    1f,
+                    (PHOTO_EDGE_PX * 2f) / info.size.width,
+                    (PHOTO_EDGE_PX * 2f) / info.size.height
+                )
+                decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE)
+                decoder.setTargetSize(
+                    (info.size.width * scale).toInt().coerceAtLeast(1),
+                    (info.size.height * scale).toInt().coerceAtLeast(1)
+                )
+            }
+        }
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, bounds)
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / sample > PHOTO_EDGE_PX * 2 ||
+            bounds.outHeight / sample > PHOTO_EDGE_PX * 2) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, options)
+        }
     }
 
     private fun handleDeviceStatus(packet: ByteArray) {

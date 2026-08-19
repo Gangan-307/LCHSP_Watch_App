@@ -29,6 +29,7 @@ data class BleUiState(
     val bluetoothEnabled: Boolean = false,
     val blePermissionsGranted: Boolean = false,
     val locationPermissionGranted: Boolean = false,
+    val photoLibraryPermissionGranted: Boolean = false,
     val notificationsGranted: Boolean = true,
     val messageNotificationAccessEnabled: Boolean = false,
     val serviceRunning: Boolean = false,
@@ -73,6 +74,14 @@ object BleServerStatus {
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
         ).any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+        val photoLibraryPermissionGranted = if (Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.TIRAMISU) {
+            context.checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                PackageManager.PERMISSION_GRANTED
+        }
         val messageNotificationAccessEnabled =
             NotificationManagerCompat.getEnabledListenerPackages(context)
                 .contains(context.packageName)
@@ -83,6 +92,7 @@ object BleServerStatus {
                 bluetoothEnabled = adapter?.isEnabled == true,
                 blePermissionsGranted = blePermissionGranted,
                 locationPermissionGranted = locationPermissionGranted,
+                photoLibraryPermissionGranted = photoLibraryPermissionGranted,
                 notificationsGranted = notificationGranted,
                 messageNotificationAccessEnabled = messageNotificationAccessEnabled
             )
